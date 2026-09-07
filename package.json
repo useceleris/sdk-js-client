@@ -1,0 +1,49 @@
+{
+  "name": "@useceleris/client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Portable Celeris realtime client foundation",
+  "type": "module",
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "main": "./dist/index.cjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  },
+  "scripts": {
+    "build": "tsdown src/index.ts --format esm,cjs --dts --target es2022 --platform neutral --clean",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tooling.json",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "check": "npm run build && npm run typecheck && npm run format:check && npm run test"
+  },
+  "devDependencies": {
+    "@types/node": "26.4.1",
+    "playwright": "1.63.0",
+    "prettier": "3.9.6",
+    "tsdown": "0.23.0",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0"
+  },
+  "dependencies": {
+    "zod": "4.5.4"
+  }
+}
