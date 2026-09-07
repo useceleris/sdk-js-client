@@ -15,7 +15,7 @@ The [shared contract](../../../celeris-sdk-specs/docs/shared-contract.md) define
 
 ## Credentials and package boundary (SDK-02, SDK-10; AUTH-03–05)
 
-The eventual contract is documentation only in C0–C2:
+C3 implements this internal contract. It supersedes the earlier positional callback:
 
 ```ts
 type Credentials = {
@@ -23,13 +23,18 @@ type Credentials = {
   readonly signature: string;
 };
 
-type CredentialProvider = (
-  channelReference: string,
-  signal: AbortSignal,
-) => Promise<Credentials>;
+type CredentialRequest = {
+  readonly channelReference: string;
+  readonly reason: "initial" | "reconnect";
+  readonly disconnectedAt: number | null;
+  readonly replayLookbackMs: number | null;
+  readonly signal: AbortSignal;
+};
+
+type CredentialProvider = (request: CredentialRequest) => Promise<Credentials>;
 ```
 
-The reviewed [server signer](../../sdk-js-server/src/signer.ts) returns a synchronous `SignedCredentials` with exactly these readonly string fields. Applications may wrap signing in an asynchronous provider; browser applications acquire credentials through their authenticated application endpoint. The provider resolves opaque strings unchanged. Future provider failures use fixed safe errors with no raw cause: Timeout/Cancelled for those conditions, Authentication only for known credential denial, otherwise Transport with credential acquisition failure. Never decode/re-serialize/sign credentials in the client. Never import server code in client fixtures or dependencies. Future server integration depends on the client's public API in S4/C3–C4.
+The reviewed [server signer](../../sdk-js-server/src/signer.ts) returns a synchronous `SignedCredentials` with exactly these readonly string fields. Applications may wrap signing in an asynchronous provider; browser applications acquire credentials through their authenticated application endpoint. The provider resolves opaque strings unchanged. Provider failures use fixed safe errors with no raw cause: Timeout/Cancelled for those conditions; arbitrary provider failures become Transport. C3 does not recognize application-supplied Authentication/Permission claims from error properties. Never decode/re-serialize/sign credentials in the client. Never import server code in client fixtures or dependencies. Future server integration depends on the client's public API in S4/C3–C4.
 
 This is recorded client-side compatibility review, not a claim of bilateral acknowledgement or changes to S0. Server-owner acknowledgement remains pending. Provider cancellation rejects acquisition and suppresses stale results using attempt identity; an uncooperative provider cannot create a late socket. The server signer itself is synchronous and has no cancellation API. Codec operations likewise remain synchronous.
 
@@ -49,7 +54,7 @@ Presence queries are serialized, with a 10-second deadline and OperationInProgre
 
 Restore message interests then presence interests in registration order. Recovery permits 10 retries, full jitter in [0, min(30 seconds, 500 ms × 2^retryIndex)], beginning at index zero; reset after 60 seconds connected. Each attempt requests fresh credentials. Deterministic configuration/permission failures, protocol corruption and explicit close do not retry. Hidden browser handshake status stays unknown. Recovery reports possible gaps and duplicates; preserve arrival order with no implicit deduplication, durable cursor or global ordering claim.
 
-Later stages will use a narrow transport factory exposing open/message/error/close, binary send, close and bounded pending-byte observations; native events are translated at the boundary. Clock and random functions support deterministic deadlines/backoff. No transport classes or placeholder adapters are implemented now.
+C3 implements an internal native transport factory and per-attempt credential acquisition. See [transport contract](transport.md). C4 owns channel state and queues; C7 adds monotonic outage measurement and jittered recovery.
 
 ## Codec decisions (SDK-01; WIRE-01–05)
 

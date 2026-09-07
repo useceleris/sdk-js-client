@@ -2,9 +2,9 @@
 
 ## Qualification targets
 
-Consumer floors: Node 22.15.0, Bun 1.3.0 and Deno 2.5.0. Additional qualification covers current Node 22/24/26 lines and current Bun/Deno. These are package/codec targets; realtime transport support requires C3–C8. Node consumer floors are independent of the development host: tsdown 0.23.0 requires Node ^22.18.0 / ^24.11.0 / >=26; Vitest 5 requires ^22.12.0 / ^24 / >=26.
+Consumer floors: Node 22.15.0, Bun 1.3.0 and Deno 2.5.0. Additional qualification covers current Node 22/24/26 lines and current Bun/Deno. C3 qualifies internal package/codec and local native-transport execution; real Celeris integration remains C8. Node consumer floors are independent of the development host: tsdown 0.23.0 requires Node ^22.18.0 / ^24.11.0 / >=26; Vitest 5 requires ^22.12.0 / ^24 / >=26.
 
-The codec needs Uint8Array, bigint, TextEncoder and fatal UTF-8 TextDecoder. It does not need WebSocket, crypto or btoa. Production types use ES2022/DOM with no Node ambient types. C3 will require URL, AbortSignal and a transport with the capabilities in the contract. Other runtimes need explicit compatible capabilities/adapters and execution evidence; no implicit Node fallback.
+The codec needs Uint8Array, bigint, TextEncoder and fatal UTF-8 TextDecoder. It does not need WebSocket, crypto or btoa. Production types use ES2022/DOM with no Node ambient types. C3 requires URL, AbortController/AbortSignal, timers and native WebSocket (or its explicit internal adapter contract). Other runtimes need explicit compatible capabilities/adapters and execution evidence; no implicit Node fallback.
 
 Current Playwright Chromium/Firefox/WebKit are automated engine targets. They do not qualify branded Chrome/Edge/Firefox/Safari releases or establish a Safari minimum version. See [Playwright browser distinctions](https://playwright.dev/docs/browsers). C8 retains branded-browser and cross-OS evidence. Engines are installed in Playwright's cache without replacing system browsers.
 
@@ -35,3 +35,11 @@ Metadata comes from installed package manifests; `npm audit --json` reported zer
 Latest TypeScript/Vitest reproduce the server's third-party declaration failures: unresolved @vitest/expect/MarkOptions and benchmark-provider optionality. `skipLibCheck: true` is scoped to tooling only, after reproducing those errors. Production and installed declaration consumers retain full checking. tsdown also reports experimental TypeScript 7 API support. No dependency was downgraded; record/recheck these limitations when upgrading. The portability check uses the server's source/built-text checks rather than an unavailable TypeScript 7 compiler API.
 
 References: [Zod parsing](https://zod.dev/basics), [Vitest](https://vitest.dev/guide/), [tsdown output](https://tsdown.dev/options/output-format), [TypeScript module resolution](https://www.typescriptlang.org/docs/handbook/modules/reference.html). Actual versioned execution, not documentation availability, establishes qualification.
+
+## C3 transport dependency and TLS evidence — 2026-09-07
+
+Installed test-only `ws` 8.21.3 (MIT, Node >=10) and `@types/ws` 8.18.1 (MIT, no declared engines) using npm @latest --save-dev --save-exact. npm audit reported zero advisories. Zod remains the sole production dependency. No independent audit claim is made for these releases.
+
+All eight runtime versions executed WS, trusted WSS using an isolated synthetic CA, and untrusted-WSS rejection; Node/Bun also executed CommonJS WS. Chromium/Firefox/WebKit executed WS and untrusted-WSS rejection. Trusted browser WSS with a private CA is not qualified here; system trust stores and global runtime installations are unchanged. No TLS verification bypass is used. Test CA trust is passed only to child processes via NODE_EXTRA_CA_CERTS or Deno --cert. The synthetic server leaf has CA:false; Deno correctly rejected the original CA-as-leaf fixture, which was corrected.
+
+See [transport contract](transport.md) for native buffering, ping, handshake visibility and close limitations. Tests use fake timers for deterministic SDK deadlines and real native runtimes for transport behavior. Automatic reconnect is specified for C7, not implemented in C3.

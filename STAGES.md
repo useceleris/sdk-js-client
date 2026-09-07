@@ -27,7 +27,7 @@ The initial pass created this tracker only. The approved C0–C2 implementation 
 | C0 — Contracts                 | Complete    | Codex      | [Results](docs/verification.md) | 2026-09-06 | Release/acknowledgement gaps remain below |
 | C1 — Foundation                | Complete    | Codex      | [Results](docs/verification.md) | 2026-09-06 | Release/acknowledgement gaps remain below |
 | C2 — Codec                     | Complete    | Codex      | [Results](docs/verification.md) | 2026-09-06 | Release/acknowledgement gaps remain below |
-| C3 — Transport and credentials | Not started | Unassigned | None yet                        | —          | See dependencies and blocker register     |
+| C3 — Transport and credentials | Complete    | Codex      | [Results](docs/verification.md) | 2026-09-07 | C8 integration/platform gates remain      |
 | C4 — Lifecycle                 | Not started | Unassigned | None yet                        | —          | See dependencies and blocker register     |
 | C5 — Messaging                 | Not started | Unassigned | None yet                        | —          | See dependencies and blocker register     |
 | C6 — Presence                  | Not started | Unassigned | None yet                        | —          | See dependencies and blocker register     |
@@ -87,14 +87,14 @@ The initial pass created this tracker only. The approved C0–C2 implementation 
 
 **Coverage:** SDK-02, SDK-03, SDK-08, SDK-10; AUTH-03–05, LIFE-01, SEC-02, RES-04.
 
-- [ ] Implement the native WebSocket adapter, binary response handling and ordered conversion. Record browser/runtime limitations around receive buffering, ping and handshake status.
-- [ ] Build validated wss URLs and encode opaque signed query values exactly once. Restrict explicit development ws to the approved loopback policy and never log credential URLs.
-- [ ] Implement the asynchronous credential provider with channel reference and AbortSignal, fresh invocation per attempt, the shared handshake deadline and stale-result invalidation.
-- [ ] Test unavailable capabilities, provider failure, aborted acquisition, transport failure, TLS behavior and safe diagnostics through fake transports and real runtime smoke tests.
+- [x] Implement the native WebSocket adapter, binary response handling and ordered conversion. Record browser/runtime limitations around receive buffering, ping and handshake status.
+- [x] Build validated wss URLs and encode opaque signed query values exactly once. Restrict explicit development ws to the approved loopback policy and never log credential URLs.
+- [x] Implement the asynchronous credential provider with channel reference and AbortSignal, fresh invocation per attempt, the shared handshake deadline and stale-result invalidation.
+- [x] Test unavailable capabilities, provider failure, aborted acquisition, transport failure, TLS behavior and safe diagnostics through fake transports and real runtime smoke tests.
 
 **Acceptance:** One channel can establish and terminate a transport with supplied synthetic credentials; browser code has no signing dependency.
 
-**Evidence / findings:** None yet; add results and blocker IDs here.
+**Evidence / findings:** [C3 verification](docs/verification.md), 2026-09-07: internal native transport and request-object credential provider verified across eight runtimes and three browser engines. Trusted-WSS success is runtime-qualified; browser private-CA success and actual Celeris acceptance remain C8 evidence. Reconnect context is standardized; the retry scheduler remains C7.
 
 ## C4 — Lifecycle
 
@@ -151,6 +151,8 @@ The initial pass created this tracker only. The approved C0–C2 implementation 
 - [ ] Restore message then presence intent in stable order; do not restore canceled intent or resend uncertain publishes. Integrate forced recovery from C6.
 - [ ] Expose gaps/duplicates and local-arrival replay semantics without a durable cursor or global ordering promise. Handle browser resume and hidden handshake status honestly.
 - [ ] Test injected timing/randomness, denied credentials, terminal corruption, repeated loss, explicit close during recovery and late credential completions.
+
+- [ ] Track the original outage with monotonic elapsed time and a separate Unix disconnection timestamp. Fresh provider requests use ceil(elapsed outage) + 5000 ms, capped at 4294967295 with an explicit truncation diagnostic. Preserve outage start through failed retries; clear on successful establishment. Test clock changes, overlap/duplicates, overflow and late results. See [reconnect contract](docs/transport.md).
 
 **Acceptance:** Recovery and presence-timeout lifecycle tests pass without leaks or unintended retransmission.
 

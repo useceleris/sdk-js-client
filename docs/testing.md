@@ -1,6 +1,6 @@
 # Test inventory
 
-This inventory covers the implemented C0–C2 package. Update it when tested behavior changes. Fixtures contain independent expected bytes and objects; runtime tests compare observations from the real codec with those expectations.
+This inventory covers the implemented C0–C3 package. Update it when tested behavior changes. Fixtures contain independent expected bytes and objects; runtime tests compare observations from the real codec with those expectations.
 
 ## Command encoding
 
@@ -51,4 +51,14 @@ See [runtime support](runtime-support.md) for matrix configuration and [verifica
 
 `npm run check` runs build, typecheck, formatting and tests. `npm run test` runs once; `npm run test:watch` watches. Supply the documented eight-runtime matrix for full qualification.
 
-Transport, credentials, subscriptions, publishing lifecycle, presence query orchestration and reconnect behavior are future C3+ work. These tests do not prove server acceptance or resolve D-001–D-003. Runtime primitives and build-tool behavior are setup, not independent test subjects.
+Channel lifecycle, subscriptions, publishing lifecycle, presence query orchestration and reconnect behavior are future C4+ work. These tests do not prove server acceptance or resolve D-001–D-003. Runtime primitives and build-tool behavior are setup, not independent test subjects.
+
+## C3 credentials and transport
+
+[Credential attempt tests](../tests/transport/connection.test.ts) cover initial/reconnect context, fresh providers, opaque values, invalid results, safe synchronous/asynchronous failures, cancellation before/during acquisition and handshake, shared deadlines, late resolution/rejection, duplicate events, diagnostic reentrancy, missing capabilities and safe internal imports.
+
+[URL tests](../tests/transport/url.test.ts) cover path prefixes, exact query values, URL component restrictions, loopback opt-in and channel character/length boundaries. [Adapter tests](../tests/transport/adapter.test.ts) cover binary ordering, text/oversize rejection, view ownership, send/buffering bounds, safe send errors, bounded idempotent close, listener removal, late messages and callback failures. [Type tests](../tests/declarations/connection-types.test.ts) verify portable asynchronous contracts and readonly credentials.
+
+[Actual transport tests](../tests/runtime/transport.test.ts) exercise a local WS/WSS echo server with exact synthetic credential query values. All eight runtimes execute ESM WS, trusted WSS with an isolated test CA and untrusted-WSS rejection. Node/Bun additionally execute CommonJS WS. Chromium/Firefox/WebKit execute WS and reject untrusted WSS. Browser trusted-CA success is not qualified by this suite; no system trust store is modified or certificate verification disabled. Fixtures contain only a synthetic local certificate/key, with no production credentials.
+
+Internal bundles exercise transport implementation separately from installed empty-package imports. Celeris authorization/replay integration remains C8. Automatic reconnect scenarios in [transport](transport.md) remain future C7 tests.
