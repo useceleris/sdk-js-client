@@ -7,7 +7,7 @@ const maximumDepth = 32;
 const minimumInteger = -(1n << 63n);
 const maximumInteger = (1n << 63n) - 1n;
 
-class MessageDecoder {
+export class MessageDecoder {
   private offset = 0;
   private fragments = 0;
   private readonly decoder = new TextDecoder("utf-8", {
