@@ -14,6 +14,14 @@ import { chromium, firefox, webkit } from "playwright";
 
 const getFixture = usePackageFixture();
 const runtimes = readRuntimeMatrix();
+const expectedExports = [
+  "Channel",
+  "Client",
+  "ConfigurationError",
+  "ConnectionError",
+  "ProtocolError",
+  "createClient",
+];
 const expectedCodec = JSON.parse(
   JSON.stringify(
     {
@@ -67,7 +75,7 @@ for (const runtime of runtimes) {
   test(`${runtime.name}: installed ESM import and private boundary`, () => {
     expect(
       runConsumer(runtime, "consumer.js", getFixture().consumerDirectory),
-    ).toEqual({ exports: [], privatePathBlocked: true });
+    ).toEqual({ exports: expectedExports, privatePathBlocked: true });
   });
   test(`${runtime.name}: codec vectors`, () => {
     expect(
@@ -82,7 +90,7 @@ for (const runtime of runtimes) {
           "consumer-require.cjs",
           getFixture().consumerDirectory,
         ),
-      ).toEqual({ exports: [], privatePathBlocked: true });
+      ).toEqual({ exports: expectedExports, privatePathBlocked: true });
     });
     test(`${runtime.name}: CommonJS codec vectors`, () => {
       expect(
@@ -125,7 +133,7 @@ for (const [name, engine] of Object.entries({ chromium, firefox, webkit })) {
       });
       expect(
         await page.evaluate(() => Reflect.get(globalThis, "clientExports")),
-      ).toEqual([]);
+      ).toEqual(expectedExports);
       await page.addScriptTag({
         path: join(
           getFixture().consumerDirectory,

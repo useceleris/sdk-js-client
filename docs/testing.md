@@ -1,6 +1,6 @@
 # Test inventory
 
-This inventory covers the implemented C0–C3 package. Update it when tested behavior changes. Fixtures contain independent expected bytes and objects; runtime tests compare observations from the real codec with those expectations.
+This inventory covers the implemented C0–C4 package, including the reconnect scheduler. Update it when tested behavior changes. Fixtures contain independent expected bytes and objects; runtime tests compare observations from the real codec with those expectations.
 
 ## Command encoding
 
@@ -43,7 +43,7 @@ This inventory covers the implemented C0–C3 package. Update it when tested beh
 
 [Runtime tests](../tests/runtime/runtime.test.ts) execute installed imports and internal codec fixtures separately. Eight configured Node/Bun/Deno versions execute ESM; Node/Bun also execute CommonJS. Chromium, Firefox and WebKit execute browser bundles. Shared golden vectors, malformed inbound vectors and invalid outbound identifiers run in these actual engines. Node-hosted unit tests additionally cover boundaries, mutation and detailed errors; those are not all repeated in every engine.
 
-Installed consumers verify the empty public export surface, private export boundaries and import safety. Import guards reject access to networking, environment-dependent capabilities and background timers. Internal codec bundles do not establish a public codec API.
+Installed consumers verify the exact six-value public export surface (`Channel`, `Client`, `ConfigurationError`, `ConnectionError`, `ProtocolError`, `createClient`), private export boundaries and import safety. Declaration consumers compile real `createClient`/`channel` usage in all three module modes and assert the built declarations contain no schema inference. Import guards reject access to networking, environment-dependent capabilities and background timers. Internal codec bundles do not establish a public codec API.
 
 See [runtime support](runtime-support.md) for matrix configuration and [verification](verification.md) for exact versions/results. Missing qualification runtimes fail rather than skip. Branded-browser and cross-OS qualification remain pending.
 
@@ -51,7 +51,7 @@ See [runtime support](runtime-support.md) for matrix configuration and [verifica
 
 `npm run check` runs build, typecheck, formatting and tests. `npm run test` runs once; `npm run test:watch` watches. Supply the documented eight-runtime matrix for full qualification.
 
-Channel lifecycle, subscriptions, publishing lifecycle, presence query orchestration and reconnect behavior are future C4+ work. These tests do not prove server acceptance or resolve D-001–D-003. Runtime primitives and build-tool behavior are setup, not independent test subjects.
+Subscriptions, publishing lifecycle and presence query orchestration are future C5/C6 work; interest restoration across reconnect is C7. These tests do not prove server acceptance or resolve D-001–D-003. Runtime primitives and build-tool behavior are setup, not independent test subjects.
 
 ## C3 credentials and transport
 
@@ -63,4 +63,8 @@ Error-boundary regressions cover providers throwing or rejecting `ConfigurationE
 
 [Actual transport tests](../tests/runtime/transport.test.ts) exercise local WS/WSS servers with exact synthetic credential query values. Client sends a valid encoded command; `ConnectionHandler` decodes a valid `SERVER_MSG`. All eight runtimes execute ESM WS, trusted WSS with an isolated test CA and untrusted-WSS rejection. Node/Bun additionally execute CommonJS WS. Chromium/Firefox/WebKit execute WS and reject untrusted WSS. Browser trusted-CA success is not qualified; no system trust store is modified or certificate verification disabled.
 
-Internal bundles exercise transport implementation separately from installed empty-package imports. Celeris authorization/replay integration remains C8. Automatic reconnect scenarios in [transport](transport.md) remain future C7 tests.
+Internal bundles exercise transport implementation separately from installed package imports. Celeris authorization/replay integration remains C8. Automatic reconnect scheduling is tested deterministically in the C4 channel suites; interest restoration remains C7.
+
+## C4 channel lifecycle and reconnect scheduler
+
+[Lifecycle](../tests/channel/lifecycle.test.ts), [close](../tests/channel/close.test.ts) and [reconnect](../tests/channel/reconnect.test.ts) suites drive `Channel` directly with injected monotonic clock, wall clock and randomness seams plus the shared [WebSocket double](../tests/helpers/websocket.ts) and fake timers, so every scheduler scenario is deterministic. They cover the seven states, concurrent-connect rejection, initial-failure semantics without `onError`, configurable `connectTimeoutMs`, listener dispatch order/disposal/containment, memoized idempotent close with the five-second budget, generation-based stale suppression, per-index jitter bounds, ten-retry exhaustion, sixty-second budget reset, preserved outage with growing capped lookback, fresh credentials per attempt, recovery-event ordering, and zero leaked timers on every terminal path. [Channel type contracts](../tests/declarations/channel-types.test.ts) pin the hand-written public shapes. These tests do not prove server acceptance, interest restoration (C7) or messaging behavior (C5).

@@ -1,6 +1,6 @@
 # @useceleris/client — consumer examples
 
-> **Status: target API for C4–C7. Not implemented yet; nothing here runs today.** The package entrypoint is empty until those stages land. This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples.
+> **Status: the lifecycle and reconnect surface (C4) is implemented — Setup, Connect and Error handling below run today.** Publish, Subscribe and Presence remain target API for C5/C6 and do not run yet. This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples.
 
 Credentials are always minted by a trusted server. The browser never sees a signing secret; it fetches short-lived opaque credentials from the application's own authenticated endpoint.
 
@@ -19,13 +19,13 @@ const client = createClient({
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         channelReference: request.channelReference,
-        reason: request.reason,                    // "initial" | "reconnect"
+        reason: request.reason, // "initial" | "reconnect"
         replayLookbackMs: request.replayLookbackMs, // present only on reconnect
       }),
-      signal: request.signal,                      // cancellation propagates
+      signal: request.signal, // cancellation propagates
     });
     if (!response.ok) throw new Error("credential request failed");
-    return response.json();                        // { payload, signature }
+    return response.json(); // { payload, signature }
   },
 });
 ```
@@ -57,16 +57,16 @@ events.onError((error) => {
   console.error(error.code, error.message);
 });
 
-await channel.connect();           // resolves when the WebSocket is open
-console.log(channel.state);        // "connected"
+await channel.connect(); // resolves when the WebSocket is open
+console.log(channel.state); // "connected"
 
-stopStates();                      // dispose one listener; idempotent
+stopStates(); // dispose one listener; idempotent
 ```
 
 A lost connection retries automatically with fresh credentials (10 attempts, full jitter). `failed` is not terminal — call `connect()` again explicitly. `close()` is terminal and idempotent:
 
 ```ts
-await channel.close();             // ≤5 s graceful budget; channel is done
+await channel.close(); // ≤5 s graceful budget; channel is done
 ```
 
 ## Publish
@@ -79,9 +79,15 @@ try {
   // Resolution means the local socket ACCEPTED the bytes.
   // It is NOT a server receipt or delivery guarantee.
 } catch (error) {
-  if (error.code === "NotConnected") { /* offline: nothing was queued */ }
-  if (error.code === "Backpressure") { /* writer full: slow down */ }
-  if (error.code === "DeliveryUnknown") { /* interrupted mid-send: do not assume either way */ }
+  if (error.code === "NotConnected") {
+    /* offline: nothing was queued */
+  }
+  if (error.code === "Backpressure") {
+    /* writer full: slow down */
+  }
+  if (error.code === "DeliveryUnknown") {
+    /* interrupted mid-send: do not assume either way */
+  }
 }
 ```
 
@@ -101,8 +107,8 @@ const stopMessages = subscription.onMessage((message) => {
 });
 
 // Later: dispose the listener, or cancel the whole subscription.
-stopMessages();                    // removes this listener only
-subscription.cancel();             // idempotent; releases the interest and all its listeners
+stopMessages(); // removes this listener only
+subscription.cancel(); // idempotent; releases the interest and all its listeners
 ```
 
 Omitting the segment subscribes the default segment. Multiple subscriptions to the same segment on one channel are fine — each receives every delivery independently, and cancelling one preserves the others' interest. Dispatch is synchronous in registration order; a throwing listener is contained and reported through `events().onError` without blocking other listeners.
@@ -121,7 +127,11 @@ const stopNotices = channel.events().onNotice((notice) => {
 });
 
 // Paginated snapshot: serialized, one in flight per channel, 10 s deadline.
-const page = await channel.presenceList({ segmentId: "chat", page: 1, perPage: 50 });
+const page = await channel.presenceList({
+  segmentId: "chat",
+  page: 1,
+  perPage: 50,
+});
 for (const connection of page.connections) {
   console.log(connection.tokenReference, connection.connectionId);
 }
@@ -140,9 +150,9 @@ try {
   await channel.connect();
 } catch (error) {
   switch (error.code) {
-    case "Timeout":       // credential+handshake deadline (default 15 s)
-    case "Cancelled":     // your AbortSignal fired
-    case "Transport":     // network/handshake failure; safe fixed message
+    case "Timeout": // credential+handshake deadline (default 15 s)
+    case "Cancelled": // your AbortSignal fired
+    case "Transport": // network/handshake failure; safe fixed message
     case "Configuration": // invalid options; fix the call site
       break;
   }

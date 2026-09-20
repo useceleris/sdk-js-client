@@ -9,7 +9,7 @@ import { MessageDecoder } from "./decode";
 import { ConfigurationError, ConnectionError, ProtocolError } from "./errors";
 import type { ServerMessage } from "./messages";
 
-const connectionTimeoutMs = 15_000;
+const defaultConnectionTimeoutMs = 15_000;
 const maximumCommandBytes = 128 * 1024;
 const maximumBufferedBytes = 1024 * 1024;
 const maximumMessageBytes = 1024 * 1024;
@@ -17,6 +17,7 @@ const maximumMessageBytes = 1024 * 1024;
 export type ConnectionOptions = {
   readonly credentialProvider: CredentialProvider;
   readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
   readonly onMessage: (message: ServerMessage) => void;
   readonly onClose?: () => void;
   readonly onError?: (error: ConnectionError | ProtocolError) => void;
@@ -27,7 +28,8 @@ export class ConnectionHandle {
 
   constructor(
     private readonly socket: WebSocket,
-    private readonly removeListeners: () => void,
+    private readonly removeDataListeners: () => void,
+    private readonly removeAllListeners: () => void,
   ) {}
 
   send(bytes: Uint8Array): void {
@@ -63,7 +65,9 @@ export class ConnectionHandle {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    this.removeListeners();
+    // The close listener stays attached so the native close event remains
+    // observable through onClose; only data listeners detach here.
+    this.removeDataListeners();
 
     if (
       this.socket.readyState !== this.socket.CLOSING &&
@@ -79,7 +83,7 @@ export class ConnectionHandle {
 
   finishNativeClose(): void {
     this.closed = true;
-    this.removeListeners();
+    this.removeAllListeners();
   }
 }
 
@@ -115,7 +119,7 @@ export class ConnectionHandler {
       const timeout = setTimeout(
         () =>
           fail(new ConnectionError("Timeout", "Connection attempt timed out.")),
-        connectionTimeoutMs,
+        options.timeoutMs ?? defaultConnectionTimeoutMs,
       );
 
       const removeAttemptListeners = (): void => {
@@ -231,9 +235,12 @@ export class ConnectionHandler {
   ): ConnectionHandle {
     let handle: ConnectionHandle;
 
-    const removeListeners = (): void => {
+    const removeDataListeners = (): void => {
       socket.removeEventListener("message", receiveMessage);
       socket.removeEventListener("error", receiveError);
+    };
+    const removeAllListeners = (): void => {
+      removeDataListeners();
       socket.removeEventListener("close", receiveClose);
     };
     const reportError = (error: ConnectionError | ProtocolError): void => {
@@ -292,7 +299,11 @@ export class ConnectionHandler {
       }
     };
 
-    handle = new ConnectionHandle(socket, removeListeners);
+    handle = new ConnectionHandle(
+      socket,
+      removeDataListeners,
+      removeAllListeners,
+    );
     socket.addEventListener("message", receiveMessage);
     socket.addEventListener("error", receiveError);
     socket.addEventListener("close", receiveClose);

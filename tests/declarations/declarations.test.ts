@@ -21,9 +21,29 @@ test("latest TypeScript resolves the installed portable entrypoint in each modul
     const filename = `consumer.${mode.extension}`;
     writeFileSync(
       join(consumerDirectory, filename),
-      `import * as client from "@useceleris/client";
-const empty: keyof typeof client extends never ? true : false = true;
-void empty;
+      `import { createClient } from "@useceleris/client";
+import type {
+  ChannelState,
+  CredentialRequest,
+  Credentials,
+} from "@useceleris/client";
+
+async function credentialProvider(
+  request: CredentialRequest,
+): Promise<Credentials> {
+  return { payload: request.channelReference, signature: "signature" };
+}
+
+const client = createClient({
+  baseUrl: "wss://example.test",
+  credentialProvider,
+});
+const channel = client.channel("room-42");
+const state: ChannelState = channel.state;
+const dispose = channel.events().onStateChange(() => undefined);
+dispose();
+void state;
+void channel.close();
 // @ts-expect-error Codec internals are not public exports.
 import { decodeServerMessage } from "@useceleris/client";
 `,
@@ -39,7 +59,9 @@ import { decodeServerMessage } from "@useceleris/client";
           strict: true,
           noEmit: true,
           types: [],
-          lib: ["ES2022"],
+          // AbortSignal in the public surface requires the platform library
+          // that declares it, mirroring the AbortController runtime capability.
+          lib: ["ES2022", "DOM"],
           skipLibCheck: false,
         },
         files: [filename],
@@ -52,5 +74,12 @@ import { decodeServerMessage } from "@useceleris/client";
         consumerDirectory,
       ),
     ).not.toThrow();
+  }
+});
+
+test("published declarations carry no schema inference", () => {
+  for (const declaration of ["dist/index.d.ts", "dist/index.d.cts"]) {
+    const contents = readFileSync(join(repositoryRoot, declaration), "utf8");
+    expect(contents).not.toMatch(/zod/);
   }
 });

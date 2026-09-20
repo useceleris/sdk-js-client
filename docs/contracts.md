@@ -48,45 +48,52 @@ Names for the C4–C7 public surface are now fixed. The entrypoint stays empty u
 export function createClient(options: ClientOptions): Client;
 
 export type ClientOptions = {
-  readonly baseUrl: string;                       // wss; ws only via allowInsecureLoopback
+  readonly baseUrl: string; // wss; ws only via allowInsecureLoopback
   readonly credentialProvider: CredentialProvider;
-  readonly allowInsecureLoopback?: boolean;       // default false
-  readonly connectTimeoutMs?: number;             // default 15_000
-  readonly presenceQueryTimeoutMs?: number;       // default 10_000
-  readonly onDiagnostic?: (event: DiagnosticEvent) => void; // opt-in, off by default, safe fields only
+  readonly allowInsecureLoopback?: boolean; // default false
+  readonly connectTimeoutMs?: number; // default 15_000
+  readonly presenceQueryTimeoutMs?: number; // default 10_000
+  // onDiagnostic is DEFERRED past C4: no DiagnosticEvent exists yet. It lands
+  // with its own decision in C7, together with the lookback-truncation
+  // diagnostic the C4 scheduler applies silently today.
 };
 
 export class Client {
-  channel(reference: string): Channel;            // side-effect free; new handle each call
+  channel(reference: string): Channel; // side-effect free; new handle each call
 }
 
 export type ChannelState =
-  | "idle" | "connecting" | "connected"
-  | "reconnecting" | "failed" | "closing" | "closed";
+  | "idle"
+  | "connecting"
+  | "connected"
+  | "reconnecting"
+  | "failed"
+  | "closing"
+  | "closed";
 
 export class Channel {
   readonly state: ChannelState;
-  connect(options?: { signal?: AbortSignal }): Promise<void>;   // OperationInProgress on concurrent
-  close(): Promise<void>;                                       // idempotent, terminal, 5 s budget
+  connect(options?: { signal?: AbortSignal }): Promise<void>; // OperationInProgress on concurrent
+  close(): Promise<void>; // idempotent, terminal, 5 s budget
   publish(options: {
-    payload: Uint8Array;                          // empty valid; ≤128 KiB encoded
-    segmentId?: string;                           // default segment when omitted
-    messageId?: string;                           // optional; empty rejected
+    payload: Uint8Array; // empty valid; ≤128 KiB encoded
+    segmentId?: string; // default segment when omitted
+    messageId?: string; // optional; empty rejected
     signal?: AbortSignal;
-  }): Promise<void>;                              // resolves on local acceptance only
-  subscribe(segmentId?: string): MessageSubscription;           // ref-counted message interest
-  subscribePresence(segmentId?: string): Subscription;          // interest only; notices arrive raw
-  events(): ChannelEventHandler;                                // the channel's single stable handler
+  }): Promise<void>; // resolves on local acceptance only
+  subscribe(segmentId?: string): MessageSubscription; // ref-counted message interest
+  subscribePresence(segmentId?: string): Subscription; // interest only; notices arrive raw
+  events(): ChannelEventHandler; // the channel's single stable handler
   presenceList(options: {
     segmentId?: string;
-    page: number;                                 // 1..2147483647, reject not clamp
-    perPage: number;                              // 1..100, reject not clamp
+    page: number; // 1..2147483647, reject not clamp
+    perPage: number; // 1..100, reject not clamp
     signal?: AbortSignal;
-  }): Promise<PresencePage>;                      // serialized; one in flight per channel
+  }): Promise<PresencePage>; // serialized; one in flight per channel
 }
 
 export interface Subscription {
-  cancel(): void;                                 // idempotent dispose; releases this interest
+  cancel(): void; // idempotent dispose; releases this interest
 }
 
 export interface MessageSubscription extends Subscription {
@@ -103,24 +110,30 @@ export interface ChannelEventHandler {
   // and returns its idempotent dispose function.
   onStateChange(listener: (state: ChannelState) => void): () => void;
   onRecovery(listener: (event: RecoveryEvent) => void): () => void;
-  onNotice(listener: (notice: ServerNotice) => void): () => void;   // raw SERVER_MSG, incl. presence prose
-  onError(listener: (error: ConnectionError | ProtocolError) => void): () => void; // async terminal failures
+  onNotice(listener: (notice: ServerNotice) => void): () => void; // raw SERVER_MSG, incl. presence prose
+  onError(listener: (error: ChannelError) => void): () => void; // async terminal failures
+  // ChannelError = ConfigurationError | ConnectionError | ProtocolError.
+  // The three error classes and ConnectionErrorCode are public exports so
+  // consumers can type onError listeners and rejections.
 }
 
 export type Message = {
   readonly tokenReference: string;
   readonly segmentId: string;
-  readonly messageId: string;                     // REV-01: server always assigns ids
+  readonly messageId: string; // REV-01: server always assigns ids
   readonly timestamp: bigint;
   readonly payload: Uint8Array;
 };
-export type ServerNotice = { readonly timestamp: bigint; readonly payload: Uint8Array };
+export type ServerNotice = {
+  readonly timestamp: bigint;
+  readonly payload: Uint8Array;
+};
 export type PresencePage = {
   readonly segmentId: string;
   readonly total: bigint;
   readonly perPage: bigint;
   readonly currentPage: bigint;
-  readonly from: bigint;                          // from > to possible; raw metadata preserved
+  readonly from: bigint; // from > to possible; raw metadata preserved
   readonly to: bigint;
   readonly connections: readonly PresenceConnection[];
 };
@@ -132,7 +145,7 @@ export type PresenceConnection = {
 export type RecoveryEvent = {
   readonly retryIndex: number;
   readonly possibleGaps: true;
-  readonly possibleDuplicates: true;              // beyond the REV-01 dedup window
+  readonly possibleDuplicates: true; // beyond the REV-01 dedup window
 };
 
 export type { Credentials, CredentialRequest, CredentialProvider }; // shapes above, exported from C4
@@ -159,7 +172,9 @@ Never exported: `ConnectionHandler`, `ConnectionHandle`, `MessageDecoder`, `enco
 
 Construction is side-effect free. Each explicitly created channel handle owns one socket; segment interests share it. State changes follow idle → connecting → connected, unexpected loss → reconnecting → connected/failed, and explicit close → closing → closed. Closed is terminal; failed requires explicit connect. Concurrent connect rejects with OperationInProgress. Connected confirms only WebSocket establishment.
 
-Use a 15-second combined credential/handshake deadline. C3 close is synchronous and idempotent; C4 adds the five-second channel close budget. Close releases SDK callbacks and listeners. Late work is suppressed by attempt settlement and, from C4, connection generation. Callback failures cannot corrupt state.
+Use one combined credential/handshake deadline per attempt: configurable `connectTimeoutMs`, default 15 seconds. `ConnectionHandle.close()` detaches data listeners immediately but keeps the native close listener so the close event stays observable; the channel distinguishes expected from unexpected closes by its own state (C4 revision of the earlier "explicit close does not report unexpected close" wording, which now applies at the channel layer). `Channel.close()` awaits the native close event capped by the five-second budget, is idempotent through a memoized promise, and terminal. Late work is suppressed by attempt settlement plus the C4 connection generation and state gating. Callback failures cannot corrupt state.
+
+C4 decisions: an initial `connect()` failure or cancellation moves the channel to `failed` and rejects the promise without dispatching `onError` (no double-reporting; `onError` covers asynchronous failures with no pending promise). `connect()` on a closing/closed channel rejects `NotConnected`. On successful recovery the `connected` state change dispatches before the `RecoveryEvent`. A throwing listener is contained and reported once through `onError` as a fixed safe error; exceptions from `onError` listeners are swallowed without re-entry. Public declarations reference `AbortSignal`, so consumers compile with the platform library that declares it (DOM or the Node types), mirroring the AbortController runtime capability floor.
 
 Publishing completes on local native WebSocket acceptance, with no server receipt, durability or delivery guarantee. No offline queue or automatic resend; interrupted submission may report DeliveryUnknown when observable. Writer bounds are 64 commands and 1 MiB including native `bufferedAmount`.
 
@@ -171,7 +186,7 @@ Presence queries are serialized, with a 10-second deadline and OperationInProgre
 
 Restore message interests then presence interests in registration order. Recovery permits 10 retries, full jitter in [0, min(30 seconds, 500 ms × 2^retryIndex)], beginning at index zero; reset after 60 seconds connected. Each attempt requests fresh credentials. Deterministic configuration/permission failures, protocol corruption and explicit close do not retry. Hidden browser handshake status stays unknown. Recovery reports possible gaps and duplicates; preserve arrival order with no durable cursor or global ordering claim. Message delivery is deduplicated by server-assigned id within the bounded REV-01 window; duplicates beyond it remain possible.
 
-C3 implements an internal native transport factory and per-attempt credential acquisition. See [transport contract](transport.md). C4 owns channel state and queues; C7 adds monotonic outage measurement and jittered recovery.
+C3 implements direct native WebSocket ownership and per-attempt credential acquisition. See [transport contract](transport.md). C4 owns channel state, the connection generation, and the reconnect scheduler with injectable monotonic clock, wall clock, and randomness; C7 restores interests over it.
 
 ## Codec decisions (SDK-01; WIRE-01–05)
 

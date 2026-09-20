@@ -24,19 +24,19 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 ## Status
 
-| Stage                  | Status      | Owner      | Evidence                                   | Completed  | Blockers                                     |
-| ---------------------- | ----------- | ---------- | ------------------------------------------ | ---------- | -------------------------------------------- |
-| C0 — Contracts         | Complete    | Codex      | [C0–C2 evidence](docs/verification.md)     | 2026-09-06 | Cross-repository acknowledgement pending     |
-| C1 — Foundation        | Complete    | Codex      | [C0–C2 evidence](docs/verification.md)     | 2026-09-06 | Cross-OS/branded-browser evidence remains C8 |
-| C2 — Codec             | Complete    | Codex      | [Codec evidence](docs/verification.md)     | 2026-09-06 | D-002 and D-003 remain open                  |
-| C3 — Connection        | Complete    | Codex      | [Direct C3 evidence](docs/verification.md) | 2026-09-07 | C8 Celeris/platform qualification remains    |
-| C4 — Channel lifecycle | Not started | Unassigned | —                                          | —          | Depends on C3                                |
-| C5 — Messaging         | Not started | Unassigned | —                                          | —          | Depends on C4                                |
-| C6 — Presence          | Not started | Unassigned | —                                          | —          | Depends on C4 and C5                         |
-| C7 — Reconnect         | Not started | Unassigned | —                                          | —          | Depends on C4–C6                             |
-| C8 — Qualification     | Not started | Unassigned | —                                          | —          | Depends on C2–C7                             |
-| C9 — Documentation     | Not started | Unassigned | —                                          | —          | Final examples depend on C8                  |
-| C10 — Release          | Not started | Unassigned | —                                          | —          | Depends on C8 and C9                         |
+| Stage                      | Status      | Owner      | Evidence                                   | Completed  | Blockers                                                         |
+| -------------------------- | ----------- | ---------- | ------------------------------------------ | ---------- | ---------------------------------------------------------------- |
+| C0 — Contracts             | Complete    | Codex      | [C0–C2 evidence](docs/verification.md)     | 2026-09-06 | Cross-repository acknowledgement pending                         |
+| C1 — Foundation            | Complete    | Codex      | [C0–C2 evidence](docs/verification.md)     | 2026-09-06 | Cross-OS/branded-browser evidence remains C8                     |
+| C2 — Codec                 | Complete    | Codex      | [Codec evidence](docs/verification.md)     | 2026-09-06 | D-002 and D-003 remain open                                      |
+| C3 — Connection            | Complete    | Codex      | [Direct C3 evidence](docs/verification.md) | 2026-09-07 | C8 Celeris/platform qualification remains                        |
+| C4 — Lifecycle + reconnect | Complete    | Claude     | [C4 evidence](docs/verification.md)        | 2026-09-20 | Eight-runtime matrix rerun remains C8; ACK-01/REV-01/DEV-01 open |
+| C5 — Messaging             | Not started | Unassigned | —                                          | —          | Depends on C4                                                    |
+| C6 — Presence              | Not started | Unassigned | —                                          | —          | Depends on C4 and C5                                             |
+| C7 — Recovery restoration  | Not started | Unassigned | —                                          | —          | Depends on C4–C6                                                 |
+| C8 — Qualification         | Not started | Unassigned | —                                          | —          | Depends on C2–C7                                                 |
+| C9 — Documentation         | Not started | Unassigned | —                                          | —          | Final examples depend on C8                                      |
+| C10 — Release              | Not started | Unassigned | —                                          | —          | Depends on C8 and C9                                             |
 
 ## C0 — Contracts
 
@@ -84,19 +84,24 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 **Acceptance:** A connection acquires credentials, awaits native open, exchanges and decodes bounded binary messages, reports safe failures, and releases listeners/timers. The eight-runtime/three-browser smoke matrix passes separately from Celeris integration.
 
-## C4 — Channel lifecycle
+## C4 — Channel lifecycle and reconnect scheduler
 
-**Dependencies:** C3. **Requirements:** SDK-03, SDK-08; LIFE-01–04, RES-01–04.
+**Dependencies:** C3. **Requirements:** SDK-02–03, SDK-07–08; LIFE-01–04, REC-01–04 (scheduler half), RES-01–04. Rescoped 2026-09-20: the connection-level reconnect scheduler moved here from C7 by owner decision.
 
-- [ ] Export the first public surface from the entrypoint: `createClient`, `Client.channel()`, `Channel` with `state`/`connect()`/`close()`/`events()`, `ChannelState`, `ChannelEventHandler` (named `on*` registration returning dispose functions — `onStateChange`/`onError` land here; `onRecovery`/`onNotice` land with their stages), `Subscription` (idempotent `cancel()`), and the credentials types `Credentials`/`CredentialRequest`/`CredentialProvider`, exactly as fixed in [contracts](docs/contracts.md) including the DEV-01 handler deviation.
-- [ ] Reject concurrent connect with `OperationInProgress` (widen `ConnectionErrorCode`; no new error classes), permit explicit restart from failed, make explicit close terminal/idempotent, and apply the five-second close budget.
-- [ ] Plumb configurable `connectTimeoutMs` (default 15 000) into the C3 deadline; add `presenceQueryTimeoutMs` plumbing point for C6.
-- [ ] Own one socket per channel, serialize writes, invalidate stale connection generations, and bound writer/delivery work with observable terminal overflow errors.
-- [ ] Deliver state changes through `events()` — the channel's single stable `ChannelEventHandler` — dispatching synchronously in registration order with contained listener exceptions. Exactly the named `on*` methods; no generic `on(name, fn)`, string keys, once/prepend variants, or listener-count APIs.
+- [x] Export the first public surface from the entrypoint: `createClient`, `Client.channel()`, `Channel` with `state`/`connect()`/`close()`/`events()`, `ChannelState`, `ChannelEventHandler` (named `on*` registration returning dispose functions — `onStateChange`/`onRecovery`/`onError` land here; `onNotice` lands with C6), `ChannelError`, `RecoveryEvent`, `Subscription` (type-only until C5/C6 return one), the credentials types `Credentials`/`CredentialRequest`/`CredentialProvider`, and the three error classes with `ConnectionErrorCode` (needed to type `onError` and rejections), exactly as fixed in [contracts](docs/contracts.md) including the DEV-01 handler deviation.
+- [x] Reject concurrent connect with `OperationInProgress` (widened `ConnectionErrorCode`; no new error classes), permit explicit restart from failed, make explicit close terminal/idempotent, and apply the five-second close budget awaiting the native close event.
+- [x] Plumb configurable `connectTimeoutMs` (default 15 000) into the C3 deadline via `ConnectionOptions.timeoutMs`; validate `presenceQueryTimeoutMs` as the plumbing point for C6.
+- [x] Own one socket per channel and invalidate stale work with a connection generation plus state gating; writer serialization and delivery bounds arrive with C5 messaging.
+- [x] Deliver state changes through `events()` — the channel's single stable `ChannelEventHandler` — dispatching synchronously in registration order with contained listener exceptions. Exactly the named `on*` methods; no generic `on(name, fn)`, string keys, once/prepend variants, or listener-count APIs.
+- [x] Retry eligible disconnects up to ten times with full jitter from a 500 ms exponential base capped at 30 seconds; reset the budget after 60 seconds connected. Record the original outage once with injectable monotonic elapsed time plus a separate Unix `disconnectedAt`; failures do not reset them.
+- [x] Before every retry request fresh credentials with `replayLookbackMs = ceil(elapsed outage) + 5000`, capped at `4294967295` (cap applied silently; the truncation diagnostic is deferred with `onDiagnostic`). Retry only `Transport`/`Timeout` failures; stop on explicit close, cancellation, deterministic configuration failures, protocol corruption, or exhaustion, suppressing stale results.
+- [x] Emit `RecoveryEvent` (`retryIndex`, possible gaps, possible duplicates) through `events().onRecovery` after the `connected` state change; expose exhaustion through one `onError` plus the `failed` state.
 
-**Tests:** All seven state transitions including loss → reconnecting → failed and explicit restart from failed; concurrent `connect()` → `OperationInProgress`; `close()` idempotent, terminal, five-second budget, releases listeners/timers; connection-generation invalidation (stale credential resolution or socket callback after close cannot revive the channel); `connectTimeoutMs` honored with 15 000 default; `onStateChange` dispatch order and dispose functions (idempotent, removal mid-dispatch safe); a throwing listener is contained, reported via `onError`, and does not block other listeners; `Subscription.cancel()` idempotent; import-guard still proves a side-effect-free entrypoint.
+**Tests** ([lifecycle](tests/channel/lifecycle.test.ts), [close](tests/channel/close.test.ts), [reconnect](tests/channel/reconnect.test.ts), [types](tests/declarations/channel-types.test.ts) — deterministic via injected clock/wall-clock/random seams and fake timers): all seven states with explicit restart from failed; concurrent `connect()` → `OperationInProgress`; initial failure/cancellation → `failed` with the promise rejection and no `onError`; `connectTimeoutMs` default and custom; dispatch order, idempotent dispose, dispose-mid-dispatch, duplicate registration, throwing-listener containment reported once via `onError`, `onError`-listener exceptions swallowed without re-entry; close idempotence with a memoized promise, five-second budget, attempt abort with late-credential suppression, retry-timer cleanup, stale socket events ignored; per-index jitter bounds `random() × min(30 s, 500 ms × 2^i)`, ten-retry exhaustion with one `onError`, sixty-second budget reset, preserved `disconnectedAt` with growing `ceil(elapsed)+5000` lookback and silent cap, wall-clock changes not affecting monotonic elapsed, fresh credentials per attempt, recovery event after `connected`, deterministic-failure and protocol-corruption stops, close mid-attempt, zero timers after every terminal path; import-guard still proves a side-effect-free entrypoint.
 
-**Acceptance:** Exported surface asserted by declaration tests with no Zod inference in public `.d.ts`; packed-artifact consumer imports and type-checks it on the minimum TypeScript; lifecycle and resource ownership are deterministic across the runtime matrix; no reconnect loop exists outside the channel state machine. Exporting the credentials types is the concrete ACK-01 artifact.
+**Acceptance:** Exported surface asserted by declaration tests with no Zod inference in public `.d.ts` (checked against both built declaration files); packed-artifact consumers compile in all three module modes (with the platform library providing `AbortSignal`, mirroring the runtime capability floor) and observe exactly the six value exports; lifecycle, recovery, and resource ownership are deterministic; the only reconnect loop lives inside the channel state machine. Exporting the credentials types is the concrete ACK-01 artifact.
+
+**Evidence / findings:** Implemented 2026-09-20; see [C4 evidence](docs/verification.md). Full `npm run check` passed locally with the default Node/Bun/Deno matrix and Chromium/Firefox/WebKit; the recorded eight-runtime matrix rerun remains for C8 qualification.
 
 ## C5 — Messaging
 
@@ -123,21 +128,18 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 **Acceptance:** Presence exports match the contracts surface; exactly one in-flight query is enforced; no typed join/leave event or subscription receipt exists anywhere in the API; response arithmetic is validated against signed-64 overflow. Full recovery behavior remains C7/C8.
 
-## C7 — Reconnect
+## C7 — Recovery restoration
 
-**Dependencies:** C4–C6. **Requirements:** SDK-02, SDK-05, SDK-07; AUTH-04, SUB-01, REC-01–04.
+**Dependencies:** C4–C6. **Requirements:** SDK-02, SDK-05, SDK-07; AUTH-04, SUB-01, REC-01–04 (restoration half). Rescoped 2026-09-20: the connection-level reconnect scheduler — retries, jitter, budget reset, outage measurement, capped replay lookback, `RecoveryEvent`, exhaustion — shipped in C4.
 
-- [ ] Retry eligible disconnects up to ten times with full jitter from a 500 ms exponential base capped at 30 seconds; reset after 60 seconds connected.
-- [ ] Record the original outage once. Use monotonic elapsed time plus a separate Unix `disconnectedAt`; failures do not reset them.
-- [ ] Before every retry request fresh credentials with `replayLookbackMs = ceil(elapsed outage) + 5000`, capped at `4294967295`, and diagnose truncation safely.
-- [ ] Restore message interests before presence interests in registration order. Exclude cancelled intent and never resend publishes.
-- [ ] Stop on explicit close, cancellation, deterministic configuration/protocol failures, or exhaustion. Suppress stale results/callbacks.
-- [ ] Emit `RecoveryEvent` (`retryIndex`, possible gaps, possible duplicates beyond the dedup window) through `events().onRecovery` and expose exhaustion through `onError` + `failed` state. Map browser-hidden handshake status to bounded retries without labeling it an authorization failure; add `Authentication`/`Permission` to `ConnectionErrorCode` only for known statuses.
-- [ ] Verify the C5 idempotent-delivery window suppresses replay duplicates across reconnect (REV-01); duplicates beyond the bounded window remain possible and stay declared in the recovery event.
+- [ ] Restore message interests before presence interests in registration order over the C4 scheduler. Exclude cancelled intent and never resend publishes.
+- [ ] Verify the C5 idempotent-delivery window absorbs replay duplicates across reconnect (REV-01); duplicates beyond the bounded window remain possible and stay declared in the recovery event.
+- [ ] Add `Authentication`/`Permission` to `ConnectionErrorCode` only for known handshake statuses; browser-hidden status keeps bounded retries without an authorization label.
+- [ ] Land the deferred `onDiagnostic` decision, including the lookback-truncation diagnostic the C4 scheduler applies silently today.
 
-**Tests (injected clock and randomness, fully deterministic):** Delay within `[0, min(30 s, 500 ms × 2^retryIndex)]` for each index; ten-retry exhaustion; budget reset after 60 seconds connected; lookback `ceil(elapsed) + 5000` growth across failures with the `4294967295` cap and truncation diagnostic; original outage preserved across failed retries; wall-clock changes do not corrupt monotonic elapsed; restoration order messages-then-presence in registration order with cancelled intent excluded; no publish resend; replayed duplicates within the dedup window delivered once; recovery event fields; stop on close, cancellation, and deterministic configuration/protocol failures; stale attempt results suppressed; zero leaked timers/listeners after every terminal path.
+**Tests:** Restoration order messages-then-presence in registration order with cancelled intent excluded; no publish resend; replayed duplicates within the dedup window delivered once across a reconnect; interest restoration under a full writer invalidates the socket per contracts; known-status mapping to `Authentication`/`Permission` without retry.
 
-**Acceptance:** Recovery uses fresh credentials, preserves the outage window, restores current intent, and leaves no timers/listeners or retransmissions. Recovery is observable only through `events()`; every REC-01–04 scenario has a deterministic test.
+**Acceptance:** Recovery restores current intent over the C4 scheduler with no retransmissions; every REC-01–04 restoration scenario has a deterministic test.
 
 ## C8 — Qualification
 
@@ -173,16 +175,16 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 ## Sequencing and blockers
 
-The server SDK may continue independently through S3. S4 depends on the public client API introduced in C4. C6 requests recovery; C7 owns the only reconnect scheduler; C8 verifies combined behavior.
+The server SDK may continue independently through S3. S4 depends on the public client API introduced in C4. C4 owns the only reconnect scheduler; C6 requests recovery; C7 restores interests over it; C8 verifies combined behavior.
 
-| ID      | Finding                                                   | Development handling                              | Stable-release gate                           |
-| ------- | --------------------------------------------------------- | ------------------------------------------------- | --------------------------------------------- |
-| D-001   | Server token freshness differs from documented intent     | Always request fresh credentials                  | Service/security resolution and evidence      |
-| D-002   | Batched error boundaries are ambiguous                    | Preserve bounded fail-safe decoding               | Protocol disposition and conformance evidence |
-| D-003   | Relayed identifiers can corrupt framing                   | Validate local identifiers; retain server concern | Service/security fix or verified resolution   |
-| PORT-01 | Support claims exceed branded-browser/cross-OS evidence   | Keep local evidence precise                       | C8 compatibility evidence                     |
-| ACK-01  | Request-object provider lacks server/spec acknowledgement | C4 exports `Credentials`/`CredentialRequest`/`CredentialProvider` as the concrete artifact; coordinate before S4 | Cross-repository acknowledgement              |
-| REV-01  | Celeris update: server always assigns MSG ids; client owns idempotent delivery (user-reported 2026-09-20; specs still say optional id, no implicit dedup) | Design C5 dedup window and non-null public `messageId`; keep codec tolerant until verified | Spec revision + C8 verification against the updated server |
-| DEV-01  | Handler-based events deviate from specs conventions (async iterables) and remove the consumer delivery queue (owner decision 2026-09-20) | Implement C4–C7 with named `on*` dispatch per [contracts](docs/contracts.md); writer bounds unchanged | Spec conventions revision acknowledging handler dispatch |
+| ID      | Finding                                                                                                                                                   | Development handling                                                                                             | Stable-release gate                                        |
+| ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| D-001   | Server token freshness differs from documented intent                                                                                                     | Always request fresh credentials                                                                                 | Service/security resolution and evidence                   |
+| D-002   | Batched error boundaries are ambiguous                                                                                                                    | Preserve bounded fail-safe decoding                                                                              | Protocol disposition and conformance evidence              |
+| D-003   | Relayed identifiers can corrupt framing                                                                                                                   | Validate local identifiers; retain server concern                                                                | Service/security fix or verified resolution                |
+| PORT-01 | Support claims exceed branded-browser/cross-OS evidence                                                                                                   | Keep local evidence precise                                                                                      | C8 compatibility evidence                                  |
+| ACK-01  | Request-object provider lacks server/spec acknowledgement                                                                                                 | C4 exports `Credentials`/`CredentialRequest`/`CredentialProvider` as the concrete artifact; coordinate before S4 | Cross-repository acknowledgement                           |
+| REV-01  | Celeris update: server always assigns MSG ids; client owns idempotent delivery (user-reported 2026-09-20; specs still say optional id, no implicit dedup) | Design C5 dedup window and non-null public `messageId`; keep codec tolerant until verified                       | Spec revision + C8 verification against the updated server |
+| DEV-01  | Handler-based events deviate from specs conventions (async iterables) and remove the consumer delivery queue (owner decision 2026-09-20)                  | Implement C4–C7 with named `on*` dispatch per [contracts](docs/contracts.md); writer bounds unchanged            | Spec conventions revision acknowledging handler dispatch   |
 
 Preserve historical results in `docs/verification.md`. Previous adapter evidence remains historical; direct C3 evidence now satisfies the revised stage. C4–C10 remain unchecked.

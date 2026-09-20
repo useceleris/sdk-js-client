@@ -13,7 +13,12 @@ export const credentialsSchema = z
   })
   .readonly();
 
-export type Credentials = z.output<typeof credentialsSchema>;
+export type {
+  CredentialProvider,
+  CredentialRequest,
+  Credentials,
+} from "./credential-types";
+import type { Credentials } from "./credential-types";
 
 export function getSafeParsedCredentials(credentials: unknown): Credentials {
   const parsed = credentialsSchema.safeParse(credentials);
@@ -21,18 +26,6 @@ export function getSafeParsedCredentials(credentials: unknown): Credentials {
 
   return parsed.data;
 } //end function getSafeParsedCredentials
-
-export type CredentialRequest = {
-  readonly channelReference: string;
-  readonly reason: "initial" | "reconnect";
-  readonly disconnectedAt?: number;
-  readonly replayLookbackMs?: number;
-  readonly signal: AbortSignal;
-};
-
-export type CredentialProvider = (
-  request: CredentialRequest,
-) => Promise<Credentials>;
 
 const replayLookbackMsSchema = z.int().min(0).max(4294967295);
 
@@ -45,13 +38,15 @@ const recoverySchema = z.discriminatedUnion("reason", [
   }),
 ]);
 
+export const channelReferenceSchema = z
+  .string()
+  .min(1)
+  .max(255)
+  .refine((value) => !/[^a-zA-Z0-9-]/.test(value));
+
 export const connectionConfigurationSchema = z.object({
   baseUrl: z.string().min(1),
-  channelReference: z
-    .string()
-    .min(1)
-    .max(255)
-    .refine((value) => !/[^a-zA-Z0-9-]/.test(value)),
+  channelReference: channelReferenceSchema,
   allowInsecureLoopback: z.boolean().default(false),
   recovery: recoverySchema.default({ reason: "initial" }),
 });

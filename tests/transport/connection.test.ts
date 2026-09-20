@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ConnectionHandler } from "../../src/connection";
 import type {
   CredentialProvider,
@@ -6,51 +6,8 @@ import type {
 } from "../../src/credentials";
 import { ConfigurationError, ProtocolError } from "../../src/errors";
 import { utf8 } from "../fixtures/codec-vectors";
+import { sockets, useTestWebSockets } from "../helpers/websocket";
 
-class TestWebSocket extends EventTarget {
-  static readonly CONNECTING = 0;
-  static readonly OPEN = 1;
-  static readonly CLOSING = 2;
-  static readonly CLOSED = 3;
-
-  readonly CONNECTING = TestWebSocket.CONNECTING;
-  readonly OPEN = TestWebSocket.OPEN;
-  readonly CLOSING = TestWebSocket.CLOSING;
-  readonly CLOSED = TestWebSocket.CLOSED;
-  binaryType = "blob";
-  bufferedAmount = 0;
-  readyState = TestWebSocket.CONNECTING;
-  readonly send = vi.fn();
-  readonly close = vi.fn(() => {
-    this.readyState = TestWebSocket.CLOSED;
-    this.dispatchEvent(new Event("close"));
-  });
-
-  constructor(readonly url: string) {
-    super();
-    sockets.push(this);
-  }
-
-  open(): void {
-    this.readyState = TestWebSocket.OPEN;
-    this.dispatchEvent(new Event("open"));
-  }
-
-  receive(data: unknown): void {
-    this.dispatchEvent(new MessageEvent("message", { data }));
-  }
-
-  fail(): void {
-    this.dispatchEvent(new Event("error"));
-  }
-
-  disconnect(): void {
-    this.readyState = TestWebSocket.CLOSED;
-    this.dispatchEvent(new Event("close"));
-  }
-}
-
-const sockets: TestWebSocket[] = [];
 const credentials = { payload: "a+/=&%識", signature: "sig+/=" };
 const configuration = {
   baseUrl: "wss://example.test/prefix/",
@@ -70,15 +27,7 @@ async function flushCredentials(): Promise<void> {
   await Promise.resolve();
 }
 
-beforeEach(() => {
-  vi.stubGlobal("WebSocket", TestWebSocket);
-});
-
-afterEach(() => {
-  vi.useRealTimers();
-  vi.unstubAllGlobals();
-  sockets.length = 0;
-});
+useTestWebSockets();
 
 describe("connection attempt", () => {
   it("awaits open and passes fresh initial credentials", async () => {
@@ -282,6 +231,24 @@ describe("connection attempt", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("honors a custom timeoutMs for the shared deadline", async () => {
+    vi.useFakeTimers();
+    const options = setup();
+    options.credentialProvider.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    const pending = new ConnectionHandler().openConnection(configuration, {
+      ...options,
+      timeoutMs: 5_000,
+    });
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: "Timeout",
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await rejection;
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("pre-cancellation skips provider execution", async () => {
     const controller = new AbortController();
     controller.abort("synthetic-secret");
@@ -430,12 +397,14 @@ describe("open connection", () => {
     );
   });
 
-  it("closes once and does not report explicit close", async () => {
+  it("closes once and reports the native close after explicit close", async () => {
     const { handle, options, socket } = await connect();
     handle.close();
     handle.close();
     expect(socket.close).toHaveBeenCalledTimes(1);
-    expect(options.onClose).not.toHaveBeenCalled();
+    expect(options.onClose).toHaveBeenCalledTimes(1);
+    socket.disconnect();
+    expect(options.onClose).toHaveBeenCalledTimes(1);
     expect(() => handle.send(new Uint8Array())).toThrow(
       "Connection is not open.",
     );

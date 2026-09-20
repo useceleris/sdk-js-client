@@ -18,7 +18,7 @@ type CredentialRequest = {
 
 Initial requests omit outage fields. Reconnect requests include both fields. C7 calculates them; C3 only validates and forwards them. Credential values remain unchanged except URL encoding.
 
-One 15-second deadline covers credential acquisition and WebSocket handshake. Caller cancellation aborts provider signal. Timeout, cancellation, provider failure, error, or close before open rejects once, closes any socket, and removes attempt listeners. Late results do nothing.
+One configurable deadline (`timeoutMs`, default 15 seconds) covers credential acquisition and WebSocket handshake. Caller cancellation aborts provider signal. Timeout, cancellation, provider failure, error, or close before open rejects once, closes any socket, and removes attempt listeners. Late results do nothing.
 
 Base URLs require WSS. Explicit development opt-in permits WS only for localhost, IPv6 loopback, or 127.0.0.0/8. User information, existing query parameters, and fragments are invalid. Deployment path prefixes remain intact. Payload and signature become query parameters exactly once.
 
@@ -26,15 +26,15 @@ Base URLs require WSS. Explicit development opt-in permits WS only for localhost
 
 `ConnectionHandle.send()` requires open socket, copies supplied byte view, rejects commands over 128 KiB, and rejects when native `bufferedAmount` plus command bytes exceeds 1 MiB. Success means local native send acceptance only.
 
-`ConnectionHandle.close()` is synchronous and idempotent. It removes SDK listeners and requests native close. C4 adds channel states and five-second graceful-close budget.
+`ConnectionHandle.close()` is synchronous and idempotent. It removes message/error listeners, requests native close, and keeps the close listener so the native close event stays observable through `onClose` (C4 revision). The channel layer owns states and the five-second graceful-close budget, and distinguishes expected from unexpected closes by its own state.
 
-Incoming messages must be `ArrayBuffer` and at most 1 MiB. `MessageDecoder` produces `ServerMessage` values. Text, Blob, unsupported data, malformed protocol, oversized messages, native errors, and callback failures close connection and report fixed safe errors. Explicit close does not report unexpected close.
+Incoming messages must be `ArrayBuffer` and at most 1 MiB. `MessageDecoder` produces `ServerMessage` values. Text, Blob, unsupported data, malformed protocol, oversized messages, native errors, and callback failures close connection and report fixed safe errors. `onClose` fires once for every native close, explicit or not; expected-versus-unexpected filtering lives in the channel state machine.
 
 Native errors expose no trusted handshake status or body. Error values never contain URLs, credentials, frames, native causes, close reasons, or callback exceptions. Imports create no socket or timer.
 
-## C7 reconnect contract
+## C4 reconnect scheduler
 
-C7 owns automatic reconnect. It records original outage, measures elapsed time monotonically, and requests fresh credentials with `ceil(elapsed outage) + 5000` milliseconds of replay, capped at `4294967295`. Failed retries keep original outage time.
+C4 owns automatic reconnect. It records original outage once, measures elapsed time with an injectable monotonic clock, and requests fresh credentials with `ceil(elapsed outage) + 5000` milliseconds of replay, capped at `4294967295` (silent cap; the truncation diagnostic is deferred with `onDiagnostic`). Failed retries keep the original outage time. C7 restores message and presence interests over this scheduler.
 
 Retry defaults remain ten attempts, full jitter from 500 ms exponential base capped at 30 seconds, and retry-budget reset after 60 seconds connected. Explicit close stops recovery. Message interests restore before presence interests; publishes never resend automatically.
 

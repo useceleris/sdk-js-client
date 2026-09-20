@@ -12,5 +12,5 @@ try {
 }
 
 console.log(
-  JSON.stringify({ exports: Object.keys(client), privatePathBlocked }),
+  JSON.stringify({ exports: Object.keys(client).sort(), privatePathBlocked }),
 );

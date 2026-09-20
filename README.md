@@ -1,6 +1,6 @@
 # @useceleris/client
 
-Private Celeris client foundation (`0.0.0`). C0–C3 supply contracts, portable packaging, an internal binary codec and transport/credential acquisition. There is no public realtime API yet; importing the package creates no connection.
+Private Celeris client foundation (`0.0.0`). C0–C3 supply contracts, portable packaging, an internal binary codec and transport/credential acquisition. C4 exports the first public surface — `createClient`, `Client.channel()`, and `Channel` lifecycle with automatic reconnect (see [EXAMPLES.md](EXAMPLES.md)). Messaging, presence and interest restoration remain unimplemented; importing the package creates no connection.
 
 Read [implementation stages](STAGES.md), [contracts](docs/contracts.md), [transport](docs/transport.md), [test inventory](docs/testing.md), [runtime support](docs/runtime-support.md), [code conventions](docs/code-conventions.md) and [verification evidence](docs/verification.md).
 

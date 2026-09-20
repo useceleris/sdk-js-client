@@ -21,7 +21,12 @@ export class ProtocolError extends Error {
 }
 
 export type ConnectionErrorCode =
-  "Timeout" | "Cancelled" | "Transport" | "NotConnected" | "Backpressure";
+  | "Timeout"
+  | "Cancelled"
+  | "Transport"
+  | "NotConnected"
+  | "Backpressure"
+  | "OperationInProgress";
 
 export class ConnectionError extends Error {
   constructor(
