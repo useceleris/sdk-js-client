@@ -5,38 +5,83 @@ import {
   type CredentialProvider,
 } from "./credentials";
 import { createCredentialUrl, validateBaseUrl } from "./connection-url";
-import { ProtocolError } from "./errors";
-import { ConnectionError, type ConnectionErrorCode } from "./transport-errors";
 import { MessageDecoder } from "./decode";
-import { ServerMessage } from "./messages";
-export type ConnectionDiagnostic = {
-  readonly phase: "credentials" | "handshake" | "connected" | "failed";
-  readonly code?: "Configuration" | ConnectionErrorCode;
-};
+import { ConfigurationError, ConnectionError, ProtocolError } from "./errors";
+import type { ServerMessage } from "./messages";
+
+const connectionTimeoutMs = 15_000;
+const maximumCommandBytes = 128 * 1024;
+const maximumBufferedBytes = 1024 * 1024;
+const maximumMessageBytes = 1024 * 1024;
 
 export type ConnectionOptions = {
   readonly credentialProvider: CredentialProvider;
-  readonly signal?: AbortSignal | undefined;
+  readonly signal?: AbortSignal;
   readonly onMessage: (message: ServerMessage) => void;
   readonly onClose?: () => void;
-  readonly onOpen?: () => void;
   readonly onError?: (error: ConnectionError | ProtocolError) => void;
 };
 
 export class ConnectionHandle {
-  private readonly socket: WebSocket;
-  constructor(socket: WebSocket) {
-    this.socket = socket;
-  } // end constructor
+  private closed = false;
+
+  constructor(
+    private readonly socket: WebSocket,
+    private readonly removeListeners: () => void,
+  ) {}
 
   send(bytes: Uint8Array): void {
-    this.socket.send(bytes);
-  } // end method send
+    if (this.closed || this.socket.readyState !== this.socket.OPEN) {
+      throw new ConnectionError("NotConnected", "Connection is not open.");
+    }
+    if (
+      !(bytes instanceof Uint8Array) ||
+      bytes.byteLength > maximumCommandBytes
+    ) {
+      throw new ConfigurationError("Invalid outgoing command.");
+    }
+    if (
+      !Number.isFinite(this.socket.bufferedAmount) ||
+      this.socket.bufferedAmount < 0
+    ) {
+      throw new ConnectionError(
+        "Transport",
+        "Invalid WebSocket buffering state.",
+      );
+    }
+    if (this.socket.bufferedAmount + bytes.byteLength > maximumBufferedBytes) {
+      throw new ConnectionError("Backpressure", "WebSocket buffer is full.");
+    }
+
+    try {
+      this.socket.send(new Uint8Array(bytes));
+    } catch {
+      throw new ConnectionError("Transport", "WebSocket send failed.");
+    }
+  }
 
   close(): void {
-    this.socket.close();
-  } // end method close
-} // end class ConnectionHandle
+    if (this.closed) return;
+    this.closed = true;
+    this.removeListeners();
+
+    if (
+      this.socket.readyState !== this.socket.CLOSING &&
+      this.socket.readyState !== this.socket.CLOSED
+    ) {
+      try {
+        this.socket.close();
+      } catch {
+        // Handle remains closed when native close fails.
+      }
+    }
+  }
+
+  finishNativeClose(): void {
+    this.closed = true;
+    this.removeListeners();
+  }
+}
 
 export class ConnectionHandler {
   async openConnection(
@@ -44,57 +89,213 @@ export class ConnectionHandler {
     options: ConnectionOptions,
   ): Promise<ConnectionHandle> {
     const config = getSafeParsedConnectionConfiguration(configuration);
+    if (
+      typeof options?.credentialProvider !== "function" ||
+      typeof options.onMessage !== "function"
+    ) {
+      throw new ConfigurationError("Invalid connection options.");
+    }
+    if (typeof globalThis.AbortController !== "function") {
+      throw new ConfigurationError("AbortController is unavailable.");
+    }
+    if (typeof globalThis.WebSocket !== "function") {
+      throw new ConfigurationError("WebSocket is unavailable.");
+    }
+
     const baseUrl = validateBaseUrl(
       config.baseUrl,
-      !!config.allowInsecureLoopback,
+      config.allowInsecureLoopback,
     );
+    const controller = new AbortController();
 
-    const credentials = getSafeParsedCredentials(
-      await options.credentialProvider({
-        signal: options.signal,
-        channelReference: config.channelReference,
-        ...config.recovery,
-      }),
-    );
+    return new Promise<ConnectionHandle>((resolve, reject) => {
+      let socket: WebSocket | undefined;
+      let settled = false;
 
-    const url = createCredentialUrl(
-      baseUrl,
-      config.channelReference,
-      credentials,
-    );
-
-    const textEncoder = new TextEncoder();
-
-    const socket = new WebSocket(url);
-    socket.binaryType = "arraybuffer";
-
-    if (options.onOpen) {
-      socket.addEventListener("open", () => options.onOpen?.());
-    }
-
-    if (options.onError) {
-      socket.addEventListener("error", (event) =>
-        options.onError?.(event as unknown as ConnectionError),
+      const timeout = setTimeout(
+        () =>
+          fail(new ConnectionError("Timeout", "Connection attempt timed out.")),
+        connectionTimeoutMs,
       );
-    }
 
-    if (options.onClose) {
-      socket.addEventListener("close", () => options.onClose?.());
-    }
+      const removeAttemptListeners = (): void => {
+        clearTimeout(timeout);
+        options.signal?.removeEventListener("abort", cancel);
+        socket?.removeEventListener("open", opened);
+        socket?.removeEventListener("error", handshakeFailed);
+        socket?.removeEventListener("close", handshakeFailed);
+      };
 
-    socket.addEventListener("message", (event) => {
-      let data: Uint8Array;
+      const fail = (error: ConfigurationError | ConnectionError): void => {
+        if (settled) return;
+        settled = true;
+        removeAttemptListeners();
+        controller.abort();
 
-      if (event.data instanceof ArrayBuffer) {
-        data = new Uint8Array(event.data);
-      } else {
-        data = textEncoder.encode(event.data);
+        try {
+          socket?.close();
+        } catch {
+          // Preserve selected safe error.
+        }
+        reject(error);
+      };
+
+      const cancel = (): void =>
+        fail(new ConnectionError("Cancelled", "Connection attempt cancelled."));
+      const handshakeFailed = (): void =>
+        fail(new ConnectionError("Transport", "WebSocket handshake failed."));
+      const opened = (): void => {
+        if (settled || !socket) return;
+        settled = true;
+        removeAttemptListeners();
+        resolve(this.createHandle(socket, options));
+      };
+
+      options.signal?.addEventListener("abort", cancel, { once: true });
+      if (options.signal?.aborted) {
+        cancel();
+        return;
       }
 
-      const serverMessage = new MessageDecoder(data).decode();
-      options.onMessage(serverMessage);
+      void this.requestCredentialsAndOpenSocket(
+        config,
+        baseUrl,
+        options.credentialProvider,
+        controller.signal,
+        {
+          isSettled: () => settled,
+          onSocket: (createdSocket) => {
+            socket = createdSocket;
+            socket.addEventListener("open", opened);
+            socket.addEventListener("error", handshakeFailed);
+            socket.addEventListener("close", handshakeFailed);
+          },
+          onFailure: fail,
+        },
+      );
     });
+  }
 
-    return new ConnectionHandle(socket);
-  } // end method openConnection
-} // end class ConnectionHandler
+  private async requestCredentialsAndOpenSocket(
+    config: ReturnType<typeof getSafeParsedConnectionConfiguration>,
+    baseUrl: URL,
+    credentialProvider: CredentialProvider,
+    signal: AbortSignal,
+    attempt: {
+      isSettled(): boolean;
+      onSocket(socket: WebSocket): void;
+      onFailure(error: ConfigurationError | ConnectionError): void;
+    },
+  ): Promise<void> {
+    let providedCredentials: unknown;
+    try {
+      providedCredentials = await credentialProvider({
+        channelReference: config.channelReference,
+        ...config.recovery,
+        signal,
+      });
+    } catch {
+      if (attempt.isSettled()) return;
+      attempt.onFailure(
+        new ConnectionError("Transport", "Credential acquisition failed."),
+      );
+      return;
+    }
+    if (attempt.isSettled()) return;
+
+    let credentials: ReturnType<typeof getSafeParsedCredentials>;
+    try {
+      credentials = getSafeParsedCredentials(providedCredentials);
+    } catch {
+      attempt.onFailure(new ConfigurationError("Invalid credentials."));
+      return;
+    }
+
+    try {
+      const socket = new WebSocket(
+        createCredentialUrl(baseUrl, config.channelReference, credentials),
+      );
+      attempt.onSocket(socket);
+      socket.binaryType = "arraybuffer";
+    } catch {
+      if (attempt.isSettled()) return;
+      attempt.onFailure(
+        new ConnectionError("Transport", "WebSocket creation failed."),
+      );
+    }
+  }
+
+  private createHandle(
+    socket: WebSocket,
+    options: ConnectionOptions,
+  ): ConnectionHandle {
+    let handle: ConnectionHandle;
+
+    const removeListeners = (): void => {
+      socket.removeEventListener("message", receiveMessage);
+      socket.removeEventListener("error", receiveError);
+      socket.removeEventListener("close", receiveClose);
+    };
+    const reportError = (error: ConnectionError | ProtocolError): void => {
+      try {
+        options.onError?.(error);
+      } catch {
+        // User callbacks cannot escape native event dispatch.
+      }
+      handle.close();
+    };
+    const receiveMessage = (event: MessageEvent): void => {
+      if (!(event.data instanceof ArrayBuffer)) {
+        reportError(
+          new ProtocolError(
+            "Expected a binary WebSocket message.",
+            "message",
+            0,
+          ),
+        );
+        return;
+      }
+      if (event.data.byteLength > maximumMessageBytes) {
+        reportError(
+          new ProtocolError("WebSocket message exceeds 1 MiB.", "message", 0),
+        );
+        return;
+      }
+
+      let message: ServerMessage;
+      try {
+        message = new MessageDecoder(new Uint8Array(event.data)).decode();
+      } catch (error) {
+        reportError(
+          error instanceof ProtocolError
+            ? error
+            : new ProtocolError("Message decoding failed.", "message", 0),
+        );
+        return;
+      }
+      try {
+        options.onMessage(message);
+      } catch {
+        reportError(
+          new ConnectionError("Transport", "Message callback failed."),
+        );
+      }
+    };
+    const receiveError = (): void =>
+      reportError(new ConnectionError("Transport", "WebSocket failed."));
+    const receiveClose = (): void => {
+      handle.finishNativeClose();
+      try {
+        options.onClose?.();
+      } catch {
+        // User callbacks cannot escape native event dispatch.
+      }
+    };
+
+    handle = new ConnectionHandle(socket, removeListeners);
+    socket.addEventListener("message", receiveMessage);
+    socket.addEventListener("error", receiveError);
+    socket.addEventListener("close", receiveClose);
+    return handle;
+  }
+}

@@ -26,8 +26,8 @@ type Credentials = {
 type CredentialRequest = {
   readonly channelReference: string;
   readonly reason: "initial" | "reconnect";
-  readonly disconnectedAt: number | null;
-  readonly replayLookbackMs: number | null;
+  readonly disconnectedAt?: number;
+  readonly replayLookbackMs?: number;
   readonly signal: AbortSignal;
 };
 
@@ -42,9 +42,9 @@ This is recorded client-side compatibility review, not a claim of bilateral ackn
 
 Construction is side-effect free. Each explicitly created channel handle owns one socket; segment interests share it. State changes follow idle → connecting → connected, unexpected loss → reconnecting → connected/failed, and explicit close → closing → closed. Closed is terminal; failed requires explicit connect. Concurrent connect rejects with OperationInProgress. Connected confirms only WebSocket establishment.
 
-Use a 15-second combined credential/handshake deadline and a 5-second close budget. Close is idempotent and releases SDK-owned callbacks, timers, queued operations and transport. Late work is suppressed by connection generation. Callback failures cannot corrupt state or recursively call a failing diagnostic hook.
+Use a 15-second combined credential/handshake deadline. C3 close is synchronous and idempotent; C4 adds the five-second channel close budget. Close releases SDK callbacks and listeners. Late work is suppressed by attempt settlement and, from C4, connection generation. Callback failures cannot corrupt state.
 
-Publishing completes on local adapter acceptance, with no server receipt, durability or delivery guarantee. No offline queue or automatic resend; interrupted submission may report DeliveryUnknown when observable. Writer bounds are 64 commands and 1 MiB including observable transport buffering. Adapter support must establish a finite bound when native pending bytes are unavailable.
+Publishing completes on local native WebSocket acceptance, with no server receipt, durability or delivery guarantee. No offline queue or automatic resend; interrupted submission may report DeliveryUnknown when observable. Writer bounds are 64 commands and 1 MiB including native `bufferedAmount`.
 
 Message and presence interests have separate per-segment reference counts. Last presence cancellation sends PRES_UNSUB. UNSUB is sent only when both counts reach zero on a non-default segment; default retains remote membership. Cancellation releases local intent immediately. If required cleanup cannot enter a full writer, invalidate the socket and enter failed with Backpressure rather than leave stale remote interest silently active. No reserved unbounded cleanup queue.
 

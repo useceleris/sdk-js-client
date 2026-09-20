@@ -19,3 +19,4 @@ Read [stages](STAGES.md), [contracts](docs/contracts.md), [transport](docs/trans
 - Read header bytes sequentially until LF, allowing a preceding CR, and read bulk payloads by declared lengths. Keep scans inside the header budget, use internal views and copy returned payloads once. Name saved diagnostic positions `fieldStartOffset`; retain one cursor and focused response readers.
 
 - Keep the test inventory current. Reject ill-formed UTF-16 identifiers before encoding; preserve valid Unicode without normalization.
+- Keep C3 direct: `ConnectionHandler` owns native WebSocket setup/events/decoding and `ConnectionHandle` owns send/close. Do not add a transport adapter, factory, diagnostic framework or redundant open callback.
