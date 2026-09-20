@@ -24,7 +24,7 @@ Base URLs require WSS. Explicit development opt-in permits WS only for localhost
 
 ## Open connection
 
-`ConnectionHandle.send()` requires open socket, copies supplied byte view, rejects commands over 128 KiB, and rejects when native `bufferedAmount` plus command bytes exceeds 1 MiB. Success means local native send acceptance only.
+`ConnectionHandle.send()` requires open socket, copies supplied byte view, rejects commands over 128 KiB, and rejects when native `bufferedAmount` plus command bytes exceeds 1 MiB. Success means local native send acceptance only. A native send that throws after hand-off reports `DeliveryUnknown` — acceptance is uncertain. The handle exposes a read-only `bufferedAmount` accessor consumed by the channel's 64-command observed-drain writer heuristic (C5); the handle itself keeps no counter.
 
 `ConnectionHandle.close()` is synchronous and idempotent. It removes message/error listeners, requests native close, and keeps the close listener so the native close event stays observable through `onClose` (C4 revision). The channel layer owns states and the five-second graceful-close budget, and distinguishes expected from unexpected closes by its own state.
 

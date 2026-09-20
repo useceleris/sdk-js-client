@@ -20,6 +20,7 @@ const expectedExports = [
   "ConfigurationError",
   "ConnectionError",
   "ProtocolError",
+  "Segment",
   "createClient",
 ];
 const expectedCodec = JSON.parse(

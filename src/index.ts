@@ -4,9 +4,11 @@ export {
   type ChannelError,
   type ChannelState,
   type ChannelEventHandler,
+  type Message,
   type Subscription,
   type RecoveryEvent,
 } from "./channel";
+export { Segment } from "./segment";
 export type {
   Credentials,
   CredentialRequest,

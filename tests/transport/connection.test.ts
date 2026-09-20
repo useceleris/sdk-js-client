@@ -392,9 +392,16 @@ describe("open connection", () => {
     socket.send.mockImplementation(() => {
       throw new Error("synthetic-secret");
     });
-    expect(() => handle.send(new Uint8Array())).toThrow(
-      "WebSocket send failed.",
-    );
+    let sendFailure: unknown;
+    try {
+      handle.send(new Uint8Array());
+    } catch (error) {
+      sendFailure = error;
+    }
+    expect(sendFailure).toMatchObject({
+      code: "DeliveryUnknown",
+      message: "WebSocket send failed.",
+    });
   });
 
   it("closes once and reports the native close after explicit close", async () => {

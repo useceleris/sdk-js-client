@@ -1,6 +1,6 @@
 # Test inventory
 
-This inventory covers the implemented C0–C4 package, including the reconnect scheduler. Update it when tested behavior changes. Fixtures contain independent expected bytes and objects; runtime tests compare observations from the real codec with those expectations.
+This inventory covers the implemented C0–C5 package, including the reconnect scheduler and segment messaging. Update it when tested behavior changes. Fixtures contain independent expected bytes and objects; runtime tests compare observations from the real codec with those expectations.
 
 ## Command encoding
 
@@ -43,7 +43,7 @@ This inventory covers the implemented C0–C4 package, including the reconnect s
 
 [Runtime tests](../tests/runtime/runtime.test.ts) execute installed imports and internal codec fixtures separately. Eight configured Node/Bun/Deno versions execute ESM; Node/Bun also execute CommonJS. Chromium, Firefox and WebKit execute browser bundles. Shared golden vectors, malformed inbound vectors and invalid outbound identifiers run in these actual engines. Node-hosted unit tests additionally cover boundaries, mutation and detailed errors; those are not all repeated in every engine.
 
-Installed consumers verify the exact six-value public export surface (`Channel`, `Client`, `ConfigurationError`, `ConnectionError`, `ProtocolError`, `createClient`), private export boundaries and import safety. Declaration consumers compile real `createClient`/`channel` usage in all three module modes and assert the built declarations contain no schema inference. Import guards reject access to networking, environment-dependent capabilities and background timers. Internal codec bundles do not establish a public codec API.
+Installed consumers verify the exact seven-value public export surface (`Channel`, `Client`, `ConfigurationError`, `ConnectionError`, `ProtocolError`, `Segment`, `createClient`), private export boundaries and import safety. Declaration consumers compile real `createClient`/`channel` usage in all three module modes and assert the built declarations contain no schema inference. Import guards reject access to networking, environment-dependent capabilities and background timers. Internal codec bundles do not establish a public codec API.
 
 See [runtime support](runtime-support.md) for matrix configuration and [verification](verification.md) for exact versions/results. Missing qualification runtimes fail rather than skip. Branded-browser and cross-OS qualification remain pending.
 
@@ -51,7 +51,7 @@ See [runtime support](runtime-support.md) for matrix configuration and [verifica
 
 `npm run check` runs build, typecheck, formatting and tests. `npm run test` runs once; `npm run test:watch` watches. Supply the documented eight-runtime matrix for full qualification.
 
-Subscriptions, publishing lifecycle and presence query orchestration are future C5/C6 work; interest restoration across reconnect is C7. These tests do not prove server acceptance or resolve D-001–D-003. Runtime primitives and build-tool behavior are setup, not independent test subjects.
+Presence interests and query orchestration are future C6 work; interest restoration verification across reconnect is C7. These tests do not prove server acceptance or resolve D-001–D-003. Runtime primitives and build-tool behavior are setup, not independent test subjects.
 
 ## C3 credentials and transport
 
@@ -68,3 +68,7 @@ Internal bundles exercise transport implementation separately from installed pac
 ## C4 channel lifecycle and reconnect scheduler
 
 [Lifecycle](../tests/channel/lifecycle.test.ts), [close](../tests/channel/close.test.ts) and [reconnect](../tests/channel/reconnect.test.ts) suites drive `Channel` directly with injected monotonic clock, wall clock and randomness seams plus the shared [WebSocket double](../tests/helpers/websocket.ts) and fake timers, so every scheduler scenario is deterministic. They cover the seven states, concurrent-connect rejection, initial-failure semantics without `onError`, configurable `connectTimeoutMs`, listener dispatch order/disposal/containment, memoized idempotent close with the five-second budget, generation-based stale suppression, per-index jitter bounds, ten-retry exhaustion, sixty-second budget reset, preserved outage with growing capped lookback, fresh credentials per attempt, recovery-event ordering, and zero leaked timers on every terminal path. [Channel type contracts](../tests/declarations/channel-types.test.ts) pin the hand-written public shapes. These tests do not prove server acceptance, interest restoration (C7) or messaging behavior (C5).
+
+## C5 segments and messaging
+
+The [messaging suite](../tests/channel/messaging.test.ts) drives `Channel.segment()` proxies with the shared WebSocket double, hand-authored MSG/ARRAY/ERROR/SERVER_MSG frames and golden outbound bytes. It covers proxy statelessness and eager identifier validation, shared interest counts across handler instances, default-segment rules (no SUB/UNSUB ever sent), publish acceptance semantics with `NotConnected`/`Cancelled`/`ConfigurationError`/`Backpressure`/`DeliveryUnknown` boundaries, the 64-command observed-drain heuristic, connect-time and reconnect-time SUB flushes with the initial-versus-reconnect failure split, segment-exact fan-out, the 1024-id dedup window (record-before-fanout, eviction, reconnect persistence, connect reset), the lenient null-id interim, error-frame reporting while remaining connected, listener containment and mid-dispatch disposal, and nested ARRAY ordering. [Channel type contracts](../tests/declarations/channel-types.test.ts) pin `Message` and the `Segment` signatures. These tests do not prove server acceptance, presence behavior (C6) or restoration verification (C7).

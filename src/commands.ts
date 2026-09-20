@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const identifierSchema = z
+export const identifierSchema = z
   .string()
   .min(1)
   // Unicode mode rejects lone surrogates while preserving valid pairs.

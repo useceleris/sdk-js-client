@@ -1,6 +1,6 @@
 # @useceleris/client — consumer examples
 
-> **Status: the channel lifecycle and reconnect surface (C4) is implemented — Setup, Connect and Error handling below run today.** Segments, publish, subscribe and presence (C5/C6) are target API and do not run yet. This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples.
+> **Status: C4–C5 are implemented — Setup, Connect, Segments (subscribe/publish) and Error handling below run today.** Presence (C6) is target API and does not run yet. This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples.
 
 Credentials are always minted by a trusted server. The browser never sees a signing secret; it fetches short-lived opaque credentials from the application's own authenticated endpoint.
 
@@ -73,7 +73,7 @@ A lost connection retries automatically with fresh credentials (10 attempts, ful
 await channel.close(); // ≤5 s graceful budget; channel and its segments are done
 ```
 
-## Segments (target API — C5)
+## Segments
 
 ```ts
 // Proxies over the SAME connection — no new sockets here.

@@ -1,6 +1,9 @@
+import { identifierSchema } from "./commands";
 import { ConnectionHandle, ConnectionHandler } from "./connection";
 import type { CredentialProvider } from "./credential-types";
+import { encodeClientCommand } from "./encode";
 import { ConfigurationError, ConnectionError, ProtocolError } from "./errors";
+import type { ServerMessage } from "./messages";
 import {
   closeBudgetMs,
   computeReplayLookbackMs,
@@ -8,8 +11,23 @@ import {
   maximumRetries,
   retryBudgetResetMs,
 } from "./reconnect";
+import { Segment, type SegmentDelegates } from "./segment";
+
+const defaultSegmentId = "default";
+// The server's DEFAULT_SEGMENTS is a list; membership stays a set test.
+const defaultSegments: ReadonlySet<string> = new Set([defaultSegmentId]);
+const dedupWindowSize = 1024;
+const maximumPendingCommands = 64;
 
 export type ChannelError = ConfigurationError | ConnectionError | ProtocolError;
+
+export type Message = {
+  readonly tokenReference: string;
+  readonly segmentId: string;
+  readonly messageId: string; // "" for the lenient null-id interim (REV-01)
+  readonly timestamp: bigint;
+  readonly payload: Uint8Array;
+};
 
 export type ChannelState =
   | "idle"
@@ -81,6 +99,26 @@ class ListenerSet<T> {
   } // end method dispatch
 } // end class ListenerSet
 
+class DedupWindow {
+  private readonly identifiers = new Set<string>();
+
+  isDuplicate(identifier: string): boolean {
+    if (this.identifiers.has(identifier)) return true;
+
+    this.identifiers.add(identifier);
+    if (this.identifiers.size > dedupWindowSize) {
+      const oldest = this.identifiers.values().next().value;
+      if (oldest !== undefined) this.identifiers.delete(oldest);
+    }
+
+    return false;
+  } // end method isDuplicate
+
+  clear(): void {
+    this.identifiers.clear();
+  } // end method clear
+} // end class DedupWindow
+
 export class Channel {
   private currentState: ChannelState = "idle";
   private generation = 0;
@@ -96,6 +134,11 @@ export class Channel {
   private resolveClose: (() => void) | undefined;
   private dispatchingErrors = false;
 
+  private pendingCommands = 0;
+  private readonly dedupWindow = new DedupWindow();
+  private readonly segmentListeners = new Map<string, ListenerSet<Message>>();
+  private readonly messageInterests = new Map<string, number>();
+
   private readonly connectionHandler = new ConnectionHandler();
   private readonly stateListeners = new ListenerSet<ChannelState>();
   private readonly recoveryListeners = new ListenerSet<RecoveryEvent>();
@@ -104,6 +147,13 @@ export class Channel {
     onStateChange: (listener) => this.stateListeners.add(listener),
     onRecovery: (listener) => this.recoveryListeners.add(listener),
     onError: (listener) => this.errorListeners.add(listener),
+  };
+  private readonly segmentDelegates: SegmentDelegates = {
+    addMessageListener: (segmentId, listener) =>
+      this.addMessageListener(segmentId, listener),
+    addMessageInterest: (segmentId) => this.addMessageInterest(segmentId),
+    publishToSegment: (segmentId, options) =>
+      this.publishToSegment(segmentId, options),
   };
 
   constructor(private readonly internals: ChannelInternals) {}
@@ -115,6 +165,14 @@ export class Channel {
   events(): ChannelEventHandler {
     return this.handler;
   } // end method events
+
+  segment(segmentId?: string): Segment {
+    const resolved = segmentId ?? defaultSegmentId;
+    if (!identifierSchema.safeParse(resolved).success)
+      throw new ConfigurationError("Invalid segment identifier.");
+
+    return new Segment(resolved, this.segmentDelegates);
+  } // end method segment
 
   async connect(options?: { signal?: AbortSignal }): Promise<void> {
     if (
@@ -136,6 +194,7 @@ export class Channel {
     const generation = this.generation;
     this.retriesUsed = 0;
     this.outage = undefined;
+    this.dedupWindow.clear();
     this.setState("connecting");
 
     try {
@@ -217,7 +276,7 @@ export class Channel {
           credentialProvider: this.internals.credentialProvider,
           signal: controller.signal,
           timeoutMs: this.internals.connectTimeoutMs,
-          onMessage: () => undefined,
+          onMessage: (message) => this.routeMessage(generation, message),
           onClose: () => this.receiveSocketClose(generation),
           onError: (error) => this.receiveSocketError(generation, error),
         },
@@ -229,14 +288,192 @@ export class Channel {
       }
 
       this.handle = handle;
+      this.pendingCommands = 0;
       this.connectedAtMonotonic = this.internals.clock();
       this.outage = undefined;
+
+      try {
+        this.flushMessageInterests();
+      } catch (error) {
+        this.handle = undefined;
+        handle.close();
+        throw error;
+      }
     } finally {
       callerSignal?.removeEventListener("abort", forwardAbort);
       if (this.attemptController === controller)
         this.attemptController = undefined;
     }
   } // end method attempt
+
+  private addMessageListener(
+    segmentId: string,
+    listener: (message: Message) => void,
+  ): () => void {
+    let listeners = this.segmentListeners.get(segmentId);
+    if (!listeners) {
+      listeners = new ListenerSet<Message>();
+      this.segmentListeners.set(segmentId, listeners);
+    }
+
+    return listeners.add(listener);
+  } // end method addMessageListener
+
+  private addMessageInterest(segmentId: string): Subscription {
+    if (this.currentState === "closing" || this.currentState === "closed")
+      throw new ConnectionError("NotConnected", "Channel is closed.");
+
+    const count = (this.messageInterests.get(segmentId) ?? 0) + 1;
+    this.messageInterests.set(segmentId, count);
+    if (
+      count === 1 &&
+      this.currentState === "connected" &&
+      !defaultSegments.has(segmentId)
+    ) {
+      this.sendInterestCommand({ command: "SUB", segmentId });
+    }
+
+    let cancelled = false;
+    return {
+      cancel: () => {
+        if (cancelled) return;
+        cancelled = true;
+
+        const remaining = (this.messageInterests.get(segmentId) ?? 1) - 1;
+        if (remaining > 0) {
+          this.messageInterests.set(segmentId, remaining);
+          return;
+        }
+        this.messageInterests.delete(segmentId);
+        if (
+          this.currentState === "connected" &&
+          !defaultSegments.has(segmentId)
+        ) {
+          this.sendInterestCommand({ command: "UNSUB", segmentId });
+        }
+      },
+    };
+  } // end method addMessageInterest
+
+  private async publishToSegment(
+    segmentId: string,
+    options: {
+      readonly payload: Uint8Array;
+      readonly messageId?: string;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<void> {
+    if (this.currentState !== "connected" || !this.handle)
+      throw new ConnectionError("NotConnected", "Channel is not connected.");
+    if (options?.signal?.aborted)
+      throw new ConnectionError("Cancelled", "Publish cancelled.");
+
+    const bytes = encodeClientCommand({
+      command: "PUB",
+      segmentId,
+      messageId: options.messageId,
+      payload: options.payload,
+    });
+    this.sendCommand(bytes);
+  } // end method publishToSegment
+
+  private sendCommand(bytes: Uint8Array): void {
+    const handle = this.handle;
+    if (!handle)
+      throw new ConnectionError("NotConnected", "Channel is not connected.");
+
+    // No native drain event exists: the command count resets whenever the
+    // buffer is observed empty at send time (documented approximation).
+    if (handle.bufferedAmount === 0) this.pendingCommands = 0;
+    if (this.pendingCommands >= maximumPendingCommands)
+      throw new ConnectionError("Backpressure", "Command writer is full.");
+
+    handle.send(bytes);
+    this.pendingCommands += 1;
+  } // end method sendCommand
+
+  // Runtime interest writes cannot leave stale remote interest silently
+  // active: a failed SUB/UNSUB invalidates the socket and fails the channel.
+  private sendInterestCommand(command: {
+    command: "SUB" | "UNSUB";
+    segmentId: string;
+  }): void {
+    try {
+      this.sendCommand(encodeClientCommand(command));
+    } catch (error) {
+      const handle = this.handle;
+      this.handle = undefined;
+      handle?.close();
+      this.failTerminal(
+        error instanceof ConfigurationError || error instanceof ConnectionError
+          ? error
+          : new ConnectionError("Transport", "Interest update failed."),
+      );
+    }
+  } // end method sendInterestCommand
+
+  private flushMessageInterests(): void {
+    for (const segmentId of this.messageInterests.keys()) {
+      if (defaultSegments.has(segmentId)) continue;
+
+      this.sendCommand(encodeClientCommand({ command: "SUB", segmentId }));
+    }
+  } // end method flushMessageInterests
+
+  private routeMessage(
+    attemptGeneration: number,
+    message: ServerMessage,
+  ): void {
+    if (attemptGeneration !== this.generation) return;
+
+    switch (message.command) {
+      case "ARRAY":
+        for (const entry of message.messages)
+          this.routeMessage(attemptGeneration, entry);
+        return;
+      case "MSG":
+        this.deliverMessage(message);
+        return;
+      case "ERROR":
+        // The server never closes the socket on an error frame; report once
+        // and remain connected. Denials arrive uncorrelated to any command.
+        this.emitError(
+          new ConnectionError("Transport", "Server reported an error."),
+        );
+        return;
+      default:
+        // SERVER_MSG and PRES_LIST_RESPONSE stay silent until C6.
+        return;
+    }
+  } // end method routeMessage
+
+  private deliverMessage(
+    message: Extract<ServerMessage, { command: "MSG" }>,
+  ): void {
+    // Ids are recorded before fanout, even with no listeners (REV-01).
+    // A null id is delivered as "" and skips dedup until C8 verifies
+    // the updated server.
+    if (
+      message.messageId !== null &&
+      this.dedupWindow.isDuplicate(message.messageId)
+    ) {
+      return;
+    }
+
+    const listeners = this.segmentListeners.get(message.segmentId);
+    if (!listeners) return;
+
+    listeners.dispatch(
+      {
+        tokenReference: message.tokenReference,
+        segmentId: message.segmentId,
+        messageId: message.messageId ?? "",
+        timestamp: message.timestamp,
+        payload: message.payload,
+      },
+      () => this.reportListenerFailure(),
+    );
+  } // end method deliverMessage
 
   private receiveSocketClose(attemptGeneration: number): void {
     if (this.currentState === "closing") {

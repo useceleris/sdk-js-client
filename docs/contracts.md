@@ -86,7 +86,7 @@ export class Segment {
   // A Segment handler is a lightweight PROXY over its channel's single
   // connection — it never owns a socket. Any number of handler instances for
   // the same segmentId share the channel connection and one interest
-  // ref-count; per-handler state is only its own listeners. This mirrors the
+  // ref-count and per-segment listener set. This mirrors the
   // server, which keeps one socket plus a per-connection map of segment
   // handles with independent replay cursors (SEG-01).
   readonly segmentId: string;
@@ -125,7 +125,7 @@ export interface ChannelEventHandler {
 export type Message = {
   readonly tokenReference: string;
   readonly segmentId: string;
-  readonly messageId: string; // REV-01: server always assigns ids
+  readonly messageId: string; // REV-01: server-assigned; "" lenient interim for null
   readonly timestamp: bigint;
   readonly payload: Uint8Array;
 };
@@ -158,7 +158,7 @@ export type { Credentials, CredentialRequest, CredentialProvider }; // shapes ab
 
 Operation errors reject their Promises. Asynchronous terminal failures (native socket error, protocol violation, callback containment) surface through `events().onError` and drive the state to `failed` via `onStateChange`; nothing is silently dropped.
 
-**REV-01 (2026-09-20, user-reported Celeris update, spec revision pending):** the server now always assigns a MSG id, and the client owns idempotent delivery. Public `Message.messageId` is non-null, and C5 deduplicates deliveries by id within a bounded, non-configurable per-channel window before fanout; C7 relies on that window to absorb replay duplicates, and duplicates beyond the window remain possible and stay declared in the recovery event. The C2 decoder keeps its nullable-id tolerance until C8 verifies the updated server; a null id then becomes a protocol violation at the delivery layer. This supersedes the earlier "no implicit deduplication" wording below for message delivery; ordering is still preserved and no durable cursor or global ordering claim follows.
+**REV-01 (2026-09-20, user-reported Celeris update, spec revision pending):** the server now always assigns a MSG id (corroborated by server source: omitted ids are replaced with `msg_{node}_{ulid}` before fanout), and the client owns idempotent delivery. Public `Message.messageId` is non-null, and C5 deduplicates deliveries by id within a bounded, non-configurable per-channel window (a 1024-entry insertion-order id set) before fanout; ids are recorded even when no listener exists. The window survives reconnect and clears on each explicit `connect()`; C7 relies on it to absorb replay duplicates, and duplicates beyond the window remain possible and stay declared in the recovery event. **Lenient interim (owner decision):** a MSG whose decoded id is null is delivered with `messageId: ""` and bypasses dedup — no protocol violation — until C8 verifies the updated server; the strict null-is-violation rule takes over then. This supersedes the earlier "no implicit deduplication" wording below for message delivery; ordering is still preserved and no durable cursor or global ordering claim follows.
 
 Errors keep the existing three classes — `ConfigurationError`, `ProtocolError`, `ConnectionError` — with no new hierarchy, base class or `category` alias field. `ConnectionErrorCode` widens to cover the shared contract's remaining categories as their stages land: `OperationInProgress` (C4), `DeliveryUnknown` (C5), `Authentication` and `Permission` (C7). The `code`/`name` values are the shared-contract categories; `"Configuration"` and `"ProtocolError"` complete the eleven.
 
@@ -167,7 +167,7 @@ Never exported: `ConnectionHandler`, `ConnectionHandle`, `MessageDecoder`, `enco
 ### Minimalism constraints (binding for C4–C7)
 
 - `Client` is a stateless configuration holder with exactly one method, `channel()`. It gains no registry, shared state or connection pool.
-- `Segment` is a stateless proxy: it holds only its `segmentId`, a reference to its channel, and its own listeners. All connection state, interest ref-counts, dedup, writer bounds and presence-query serialization live on `Channel`. `segment()` never opens a socket, sends a command, or allocates server resources; network effects come only from `subscribe()`, `publish()`, `subscribePresence()` and `presenceList()`. (SEG-01 supersedes the earlier "no `Segment` class" rule.)
+- `Segment` is a fully stateless proxy: it holds only its `segmentId` and the channel's delegate functions. Listeners live on `Channel` in one shared per-segment `ListenerSet` (all handler instances of a segment share it; dispose functions remain per listener), alongside interest ref-counts, dedup, writer bounds and presence-query serialization. `segment()` never opens a socket, sends a command, allocates server resources, or grows channel state; network effects come only from `subscribe()`, `publish()`, `subscribePresence()` and `presenceList()`. (SEG-01 supersedes the earlier "no `Segment` class" rule.)
 - One `Subscription` shape (`cancel()`); dispose functions are the listener handle.
 - No error hierarchy; only the code-union widening above.
 - No reconnect or limit knobs in `ClientOptions`. Shared-contract defaults (10 retries, full jitter, 64-command/1 MiB writer) are authoritative and non-configurable in v1. Only the two spec-marked-configurable timeouts are options.
@@ -196,7 +196,9 @@ Use one combined credential/handshake deadline per attempt: configurable `connec
 
 C4 decisions: an initial `connect()` failure or cancellation moves the channel to `failed` and rejects the promise without dispatching `onError` (no double-reporting; `onError` covers asynchronous failures with no pending promise). `connect()` on a closing/closed channel rejects `NotConnected`. On successful recovery the `connected` state change dispatches before the `RecoveryEvent`. A throwing listener is contained and reported once through `onError` as a fixed safe error; exceptions from `onError` listeners are swallowed without re-entry. Public declarations reference `AbortSignal`, so consumers compile with the platform library that declares it (DOM or the Node types), mirroring the AbortController runtime capability floor.
 
-Publishing completes on local native WebSocket acceptance, with no server receipt, durability or delivery guarantee. No offline queue or automatic resend; interrupted submission may report DeliveryUnknown when observable. Writer bounds are 64 commands and 1 MiB including native `bufferedAmount`.
+Publishing completes on local native WebSocket acceptance, with no server receipt, durability or delivery guarantee. No offline queue or automatic resend; a native send that throws after hand-off reports `DeliveryUnknown` (acceptance uncertain). Writer bounds are 64 commands and 1 MiB including native `bufferedAmount`. The command count uses an observed-drain approximation — no native drain event exists, so the counter resets whenever `bufferedAmount` is observed zero at send time and may overcount between sends; the byte bound is exact.
+
+C5 decisions: a mid-connection server ERROR frame is reported once through `events().onError` as fixed `ConnectionError("Transport", "Server reported an error.")` — no server bytes or name until diagnostics land — and the channel **remains connected** (server source: `-Err` never closes the socket; denied commands are dropped individually). Consequently a permission-denied publish resolves locally and the error arrives later, uncorrelated — the protocol has no acks. The default segment never receives SUB or UNSUB from the client (membership is automatic at connect; the server refuses default UNSUB). SUB for registered interests is flushed on every transition to connected in registration order, before the `connected` state change is observable; an initial-connect flush failure rejects `connect()` without `onError` (the C4 rule), while a reconnect flush failure fails terminally with `onError`. Runtime SUB/UNSUB write failures invalidate the socket and fail the channel rather than leave stale remote interest.
 
 Message and presence interests have separate per-segment reference counts. Last presence cancellation sends PRES_UNSUB. UNSUB is sent only when both counts reach zero on a non-default segment; default retains remote membership. Cancellation releases local intent immediately. If required cleanup cannot enter a full writer, invalidate the socket and enter failed with Backpressure rather than leave stale remote interest silently active. No reserved unbounded cleanup queue.
 

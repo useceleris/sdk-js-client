@@ -26,7 +26,8 @@ export type ConnectionErrorCode =
   | "Transport"
   | "NotConnected"
   | "Backpressure"
-  | "OperationInProgress";
+  | "OperationInProgress"
+  | "DeliveryUnknown";
 
 export class ConnectionError extends Error {
   constructor(

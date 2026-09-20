@@ -41,7 +41,9 @@ const client = createClient({
 const channel = client.channel("room-42");
 const state: ChannelState = channel.state;
 const dispose = channel.events().onStateChange(() => undefined);
+const stopMessages = channel.segment("chat").onMessage(() => undefined);
 dispose();
+stopMessages();
 void state;
 void channel.close();
 // @ts-expect-error Codec internals are not public exports.

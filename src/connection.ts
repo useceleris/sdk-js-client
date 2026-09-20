@@ -58,8 +58,13 @@ export class ConnectionHandle {
     try {
       this.socket.send(new Uint8Array(bytes));
     } catch {
-      throw new ConnectionError("Transport", "WebSocket send failed.");
+      // The native send threw after hand-off; acceptance is uncertain.
+      throw new ConnectionError("DeliveryUnknown", "WebSocket send failed.");
     }
+  }
+
+  get bufferedAmount(): number {
+    return this.socket.bufferedAmount;
   }
 
   close(): void {

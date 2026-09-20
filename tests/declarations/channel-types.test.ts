@@ -4,9 +4,11 @@ import type {
   ChannelError,
   ChannelEventHandler,
   ChannelState,
+  Message,
   RecoveryEvent,
   Subscription,
 } from "../../src/channel";
+import type { Segment } from "../../src/segment";
 import type { ClientOptions } from "../../src/client";
 import type {
   CredentialProvider,
@@ -52,6 +54,31 @@ describe("channel type contracts", () => {
     expectTypeOf<Subscription>().toEqualTypeOf<{ cancel(): void }>();
   });
 
+  it("keeps the segment and message shapes hand-written", () => {
+    expectTypeOf<Message>().toEqualTypeOf<{
+      readonly tokenReference: string;
+      readonly segmentId: string;
+      readonly messageId: string;
+      readonly timestamp: bigint;
+      readonly payload: Uint8Array;
+    }>();
+
+    expectTypeOf<Channel["segment"]>().toEqualTypeOf<
+      (segmentId?: string) => Segment
+    >();
+    expectTypeOf<Segment["segmentId"]>().toEqualTypeOf<string>();
+    expectTypeOf<Segment["subscribe"]>().returns.toEqualTypeOf<Subscription>();
+    expectTypeOf<ReturnType<Segment["onMessage"]>>().toEqualTypeOf<
+      () => void
+    >();
+    expectTypeOf<Segment["publish"]>().returns.toEqualTypeOf<Promise<void>>();
+    expectTypeOf<Parameters<Segment["publish"]>[0]>().toEqualTypeOf<{
+      readonly payload: Uint8Array;
+      readonly messageId?: string;
+      readonly signal?: AbortSignal;
+    }>();
+  });
+
   it("keeps credential and option types free of schema inference", () => {
     expectTypeOf<Credentials>().toEqualTypeOf<{
       readonly payload: string;
@@ -84,10 +111,18 @@ describe("channel type contracts", () => {
   });
 });
 
-function verifyReadonly(event: RecoveryEvent, error: ChannelError): void {
+function verifyReadonly(
+  event: RecoveryEvent,
+  message: Message,
+  error: ChannelError,
+): void {
   // @ts-expect-error retryIndex is readonly
   event.retryIndex = 1;
   // @ts-expect-error possibleGaps is readonly
   event.possibleGaps = true;
+  // @ts-expect-error messageId is readonly
+  message.messageId = "changed";
+  // @ts-expect-error payload is readonly
+  message.payload = new Uint8Array();
   void error;
 } // end function verifyReadonly
