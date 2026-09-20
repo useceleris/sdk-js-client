@@ -18,6 +18,7 @@ Keep the implementation direct:
 - Add only the settlement, timeout, cancellation, and listener cleanup needed for those responsibilities. Do not add transport factories, registries, generic event frameworks, or a second adapter layer.
 - Decode binary messages with `MessageDecoder`. Reject unsupported message data. Translate native failures into safe SDK errors; never cast native events to SDK errors.
 - Keep runtime code portable across Node.js, Bun, Deno, and browsers. Use native WebSocket directly and keep imports side-effect free.
+- The C4–C7 public surface is fixed in [contracts — Public API surface](docs/contracts.md), together with binding minimalism constraints (stateless `Client`, one `Subscription<T>` type, no error hierarchy, no extra configuration knobs, no event framework). Consumer usage is mirrored in [EXAMPLES.md](EXAMPLES.md); both change in the same commit as any surface change. Every new public identifier must trace to a specification requirement.
 
 Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Completion requires checked tasks, passing evidence, reviewed files, and no unresolved blocker that invalidates the acceptance gate.
 
@@ -87,34 +88,40 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 **Dependencies:** C3. **Requirements:** SDK-03, SDK-08; LIFE-01–04, RES-01–04.
 
-- [ ] Add the public channel API around the connection classes, with idle, connecting, connected, reconnecting, failed, closing, and closed states.
-- [ ] Reject concurrent connect, permit explicit restart from failed, make explicit close terminal/idempotent, and apply the five-second close budget.
-- [ ] Own one socket per channel, serialize writes, invalidate stale generations, and bound writer/delivery work with observable terminal overflow errors.
-- [ ] Test races, reentrant callbacks, repeated teardown, stale callbacks, saturation, and cleanup.
+- [ ] Export the first public surface from the entrypoint: `createClient`, `Client.channel()`, `Channel` with `state`/`connect()`/`close()`/`events()`, `ChannelState`, `Subscription<T>` (async-iterable with idempotent `cancel()`), and the credentials types `Credentials`/`CredentialRequest`/`CredentialProvider`, exactly as fixed in [contracts](docs/contracts.md).
+- [ ] Reject concurrent connect with `OperationInProgress` (widen `ConnectionErrorCode`; no new error classes), permit explicit restart from failed, make explicit close terminal/idempotent, and apply the five-second close budget.
+- [ ] Plumb configurable `connectTimeoutMs` (default 15 000) into the C3 deadline; add `presenceQueryTimeoutMs` plumbing point for C6.
+- [ ] Own one socket per channel, serialize writes, invalidate stale connection generations, and bound writer/delivery work with observable terminal overflow errors.
+- [ ] Deliver state changes in order through the bounded `events()` iterable; no emitter, listener registry, or per-event methods.
 
-**Acceptance:** Lifecycle and resource ownership are deterministic; no reconnect loop exists outside the channel state machine.
+**Tests:** All seven state transitions including loss → reconnecting → failed and explicit restart from failed; concurrent `connect()` → `OperationInProgress`; `close()` idempotent, terminal, five-second budget, releases listeners/timers; connection-generation invalidation (stale credential resolution or socket callback after close cannot revive the channel); `connectTimeoutMs` honored with 15 000 default; `events()` order and bounded queue; `Subscription.cancel()` idempotent; import-guard still proves a side-effect-free entrypoint.
+
+**Acceptance:** Exported surface asserted by declaration tests with no Zod inference in public `.d.ts`; packed-artifact consumer imports and type-checks it on the minimum TypeScript; lifecycle and resource ownership are deterministic across the runtime matrix; no reconnect loop exists outside the channel state machine. Exporting the credentials types is the concrete ACK-01 artifact.
 
 ## C5 — Messaging
 
 **Dependencies:** C4. **Requirements:** SDK-04–05, SDK-08; PUB-01–04, SUB-01–04, RES-01–03.
 
-- [ ] Add publishing with owned bytes, optional message IDs, and local WebSocket acceptance semantics.
+- [ ] Export `Channel.publish(options)` (payload, optional `segmentId`/`messageId`/`signal`) with owned bytes and local WebSocket acceptance semantics, and `Channel.subscribe(segmentId?)` returning `Subscription<Message>` with the hand-written `Message` type — no Zod inference in public declarations.
 - [ ] Add bounded subscriptions and reference-counted segment ownership, preserving default-segment rules.
-- [ ] Reject offline sends. Never queue/resend uncertain publishes or infer acknowledgements.
-- [ ] Test concurrent sends, multiple subscribers, cancellation, saturation, binary payloads, and interruption.
+- [ ] Reject offline sends with `NotConnected`. Add `DeliveryUnknown` to `ConnectionErrorCode` for observably interrupted post-submission writes. Never queue/resend uncertain publishes or infer acknowledgements.
+- [ ] Implement client-side idempotent delivery (REV-01): the server now always assigns MSG ids, and the client deduplicates deliveries by `messageId` within a bounded per-channel window before fanout. A MSG without an id is a protocol violation once REV-01 is verified. `Message.messageId` is non-null in the public type. The window is fixed-size, counts toward delivery-queue memory, and is not configurable.
 
-**Acceptance:** Messaging is bounded and ownership explicit; no server receipt or durable-delivery claim is made.
+**Tests:** Publish resolves on local acceptance only; duplicate `messageId` within the dedup window delivered exactly once while ids beyond the window pass through; MSG without id → `ProtocolError`; offline publish → `NotConnected` without queueing; over-128 KiB encoded command rejected before any write; writer bounds (64 commands / 1 MiB including native `bufferedAmount`) → `Backpressure` without enqueueing; interrupted post-submission write → `DeliveryUnknown` where observable; empty `messageId` rejected while omitted encodes null; `UNSUB` sent only when message and presence counts both reach zero on a non-default segment, default segment never remote-unsubscribed; delivery-queue overflow (256 deliveries / 1 MiB counting fanout copies) aborts the socket, enters failed, and terminates iterators with `Backpressure`; concurrent sends, multi-subscriber fanout, `cancel()` in `finally`, and binary payload fidelity including empty bytes.
+
+**Acceptance:** Publish/subscribe exports match the contracts surface; no receipt or acknowledgement API exists anywhere; bounds evidence is recorded; iterators are bounded and terminate observably. Messaging is bounded and ownership explicit; no server receipt or durable-delivery claim is made.
 
 ## C6 — Presence
 
 **Dependencies:** C4 and C5. **Requirements:** SDK-05–06; SUB-02–03, PRES-01–03.
 
-- [ ] Add independent presence ownership, correct PRES_UNSUB/UNSUB behavior, and raw notices without parsing prose.
-- [ ] Add one serialized presence page query per channel with validated response metadata and a ten-second deadline.
+- [ ] Export `Channel.subscribePresence(segmentId?)` returning `Subscription<never>` (interest only), `Channel.notices()` returning `Subscription<ServerNotice>` (raw SERVER_MSG bytes, never parsed into typed events), and `Channel.presenceList(options)` returning `PresencePage`/`PresenceConnection` — independent presence ownership with correct PRES_UNSUB/UNSUB behavior.
+- [ ] Serialize one presence page query per channel with validated response metadata and the configurable `presenceQueryTimeoutMs` (default 10 000).
 - [ ] Release a query cancelled before send; retire the connection after cancellation/timeout following send.
-- [ ] Test overlapping, late, and unsolicited responses, permissions, cancellation, and multiple connections per identity.
 
-**Acceptance:** Presence ownership and query matching pass; full recovery behavior remains C7/C8.
+**Tests:** Presence interest counting and PRES_SUB/PRES_UNSUB emission; overlapping `presenceList` → `OperationInProgress`; `presenceQueryTimeoutMs` honored with 10 000 default; cancellation before send releases the slot while cancellation/timeout after send retires the connection; `page`/`perPage` bounds rejected, never clamped; out-of-range pages surface raw metadata with `from > to` and empty connections; unsolicited and late responses treated as protocol events; `notices()` delivers raw bytes untyped; multiple connections per identity.
+
+**Acceptance:** Presence exports match the contracts surface; exactly one in-flight query is enforced; no typed join/leave event or subscription receipt exists anywhere in the API; response arithmetic is validated against signed-64 overflow. Full recovery behavior remains C7/C8.
 
 ## C7 — Reconnect
 
@@ -125,9 +132,12 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 - [ ] Before every retry request fresh credentials with `replayLookbackMs = ceil(elapsed outage) + 5000`, capped at `4294967295`, and diagnose truncation safely.
 - [ ] Restore message interests before presence interests in registration order. Exclude cancelled intent and never resend publishes.
 - [ ] Stop on explicit close, cancellation, deterministic configuration/protocol failures, or exhaustion. Suppress stale results/callbacks.
-- [ ] Test growing lookback, clock changes, overlap/duplicates, cap behavior, failures, stable reset, exhaustion, close, and restoration order.
+- [ ] Emit the `ChannelEvent` recovery arm (`retryIndex`, possible gaps, possible duplicates beyond the dedup window) through `events()` and expose exhaustion. Map browser-hidden handshake status to bounded retries without labeling it an authorization failure; add `Authentication`/`Permission` to `ConnectionErrorCode` only for known statuses.
+- [ ] Verify the C5 idempotent-delivery window suppresses replay duplicates across reconnect (REV-01); duplicates beyond the bounded window remain possible and stay declared in the recovery event.
 
-**Acceptance:** Recovery uses fresh credentials, preserves the outage window, restores current intent, and leaves no timers/listeners or retransmissions.
+**Tests (injected clock and randomness, fully deterministic):** Delay within `[0, min(30 s, 500 ms × 2^retryIndex)]` for each index; ten-retry exhaustion; budget reset after 60 seconds connected; lookback `ceil(elapsed) + 5000` growth across failures with the `4294967295` cap and truncation diagnostic; original outage preserved across failed retries; wall-clock changes do not corrupt monotonic elapsed; restoration order messages-then-presence in registration order with cancelled intent excluded; no publish resend; replayed duplicates within the dedup window delivered once; recovery event fields; stop on close, cancellation, and deterministic configuration/protocol failures; stale attempt results suppressed; zero leaked timers/listeners after every terminal path.
+
+**Acceptance:** Recovery uses fresh credentials, preserves the outage window, restores current intent, and leaves no timers/listeners or retransmissions. Recovery is observable only through `events()`; every REC-01–04 scenario has a deterministic test.
 
 ## C8 — Qualification
 
@@ -143,11 +153,13 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 **Dependencies:** C5–C8. **Requirements:** SDK-09, SDK-11; LANG-01–03, REL-01, REL-03.
 
-- [ ] Provide packed-artifact examples using `@useceleris/client` for browsers and qualified server runtimes.
-- [ ] Explain credential callbacks, readiness, ownership, cancellation, binary/bigint values, notices, replay, gaps/duplicates, and local publish acceptance.
+- [ ] Provide packed-artifact examples using `@useceleris/client` for browsers and qualified server runtimes; promote [EXAMPLES.md](EXAMPLES.md) snippets to verified packed-artifact examples.
+- [ ] Explain credential callbacks, readiness, ownership, cancellation, binary/bigint values, notices, replay, the bounded idempotent-delivery window, gaps/duplicates beyond it, and local publish acceptance. Document bigint diagnostic serialization as decimal strings.
 - [ ] Keep browser examples free of secrets and `@useceleris/server`.
 
-**Acceptance:** Examples run on claimed targets and describe only verified behavior.
+**Tests:** Every EXAMPLES.md snippet compiles and executes against packed artifacts on qualified runtimes and browsers.
+
+**Acceptance:** Examples run on claimed targets and describe only verified behavior. The EXAMPLES.md status banner is removed only when the API it shows is shipped and green.
 
 ## C10 — Release
 
@@ -169,6 +181,7 @@ The server SDK may continue independently through S3. S4 depends on the public c
 | D-002   | Batched error boundaries are ambiguous                    | Preserve bounded fail-safe decoding               | Protocol disposition and conformance evidence |
 | D-003   | Relayed identifiers can corrupt framing                   | Validate local identifiers; retain server concern | Service/security fix or verified resolution   |
 | PORT-01 | Support claims exceed branded-browser/cross-OS evidence   | Keep local evidence precise                       | C8 compatibility evidence                     |
-| ACK-01  | Request-object provider lacks server/spec acknowledgement | Coordinate before S4                              | Cross-repository acknowledgement              |
+| ACK-01  | Request-object provider lacks server/spec acknowledgement | C4 exports `Credentials`/`CredentialRequest`/`CredentialProvider` as the concrete artifact; coordinate before S4 | Cross-repository acknowledgement              |
+| REV-01  | Celeris update: server always assigns MSG ids; client owns idempotent delivery (user-reported 2026-09-20; specs still say optional id, no implicit dedup) | Design C5 dedup window and non-null public `messageId`; keep codec tolerant until verified | Spec revision + C8 verification against the updated server |
 
 Preserve historical results in `docs/verification.md`. Previous adapter evidence remains historical; direct C3 evidence now satisfies the revised stage. C4–C10 remain unchecked.

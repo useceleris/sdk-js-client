@@ -38,6 +38,102 @@ The reviewed [server signer](../../sdk-js-server/src/signer.ts) returns a synchr
 
 This is recorded client-side compatibility review, not a claim of bilateral acknowledgement or changes to S0. Server-owner acknowledgement remains pending. Provider cancellation rejects acquisition and suppresses stale results using attempt identity; an uncooperative provider cannot create a late socket. The server signer itself is synchronous and has no cancellation API. Codec operations likewise remain synchronous.
 
+## Public API surface (SDK-03–09; decided 2026-09-20)
+
+Names for the C4–C7 public surface are now fixed. The entrypoint stays empty until C4 exports the first subset. Zod inference never crosses into public declarations: every exported type below is hand-written, and internal `ClientCommand`/`ServerMessage` shapes map onto `Message`, `ServerNotice` and `PresencePage`. Consumer usage is mirrored in [EXAMPLES.md](../EXAMPLES.md), which must change in the same commit as this section.
+
+```ts
+export function createClient(options: ClientOptions): Client;
+
+export type ClientOptions = {
+  readonly baseUrl: string;                       // wss; ws only via allowInsecureLoopback
+  readonly credentialProvider: CredentialProvider;
+  readonly allowInsecureLoopback?: boolean;       // default false
+  readonly connectTimeoutMs?: number;             // default 15_000
+  readonly presenceQueryTimeoutMs?: number;       // default 10_000
+  readonly onDiagnostic?: (event: DiagnosticEvent) => void; // opt-in, off by default, safe fields only
+};
+
+export class Client {
+  channel(reference: string): Channel;            // side-effect free; new handle each call
+}
+
+export type ChannelState =
+  | "idle" | "connecting" | "connected"
+  | "reconnecting" | "failed" | "closing" | "closed";
+
+export class Channel {
+  readonly state: ChannelState;
+  connect(options?: { signal?: AbortSignal }): Promise<void>;   // OperationInProgress on concurrent
+  close(): Promise<void>;                                       // idempotent, terminal, 5 s budget
+  publish(options: {
+    payload: Uint8Array;                          // empty valid; ≤128 KiB encoded
+    segmentId?: string;                           // default segment when omitted
+    messageId?: string;                           // optional; empty rejected
+    signal?: AbortSignal;
+  }): Promise<void>;                              // resolves on local acceptance only
+  subscribe(segmentId?: string): Subscription<Message>;         // ref-counted message interest
+  subscribePresence(segmentId?: string): Subscription<never>;   // interest only; notices arrive raw
+  notices(): Subscription<ServerNotice>;                        // raw SERVER_MSG stream, incl. presence prose
+  events(): Subscription<ChannelEvent>;                         // state changes + recovery events
+  presenceList(options: {
+    segmentId?: string;
+    page: number;                                 // 1..2147483647, reject not clamp
+    perPage: number;                              // 1..100, reject not clamp
+    signal?: AbortSignal;
+  }): Promise<PresencePage>;                      // serialized; one in flight per channel
+}
+
+export interface Subscription<T> extends AsyncIterable<T> {
+  cancel(): void;                                 // idempotent dispose; bounded queue behind it
+}
+
+export type Message = {
+  readonly tokenReference: string;
+  readonly segmentId: string;
+  readonly messageId: string;                     // REV-01: server always assigns ids
+  readonly timestamp: bigint;
+  readonly payload: Uint8Array;
+};
+export type ServerNotice = { readonly timestamp: bigint; readonly payload: Uint8Array };
+export type PresencePage = {
+  readonly segmentId: string;
+  readonly total: bigint;
+  readonly perPage: bigint;
+  readonly currentPage: bigint;
+  readonly from: bigint;                          // from > to possible; raw metadata preserved
+  readonly to: bigint;
+  readonly connections: readonly PresenceConnection[];
+};
+export type PresenceConnection = {
+  readonly tokenReference: string;
+  readonly connectionId: string;
+  readonly timestamp: bigint;
+};
+export type ChannelEvent =
+  | { readonly kind: "state"; readonly state: ChannelState }
+  | { readonly kind: "recovery"; readonly retryIndex: number; readonly possibleGaps: true; readonly possibleDuplicates: true };
+
+export type { Credentials, CredentialRequest, CredentialProvider }; // shapes above, exported from C4
+```
+
+There is no `"error"` event kind: operation errors reject their Promises, and a subscription failure terminates the iterator with the error (terminal iterator state per the delivery-queue contract).
+
+**REV-01 (2026-09-20, user-reported Celeris update, spec revision pending):** the server now always assigns a MSG id, and the client owns idempotent delivery. Public `Message.messageId` is non-null, and C5 deduplicates deliveries by id within a bounded, non-configurable per-channel window before fanout; C7 relies on that window to absorb replay duplicates, and duplicates beyond the window remain possible and stay declared in the recovery event. The C2 decoder keeps its nullable-id tolerance until C8 verifies the updated server; a null id then becomes a protocol violation at the delivery layer. This supersedes the earlier "no implicit deduplication" wording below for message delivery; ordering is still preserved and no durable cursor or global ordering claim follows.
+
+Errors keep the existing three classes — `ConfigurationError`, `ProtocolError`, `ConnectionError` — with no new hierarchy, base class or `category` alias field. `ConnectionErrorCode` widens to cover the shared contract's remaining categories as their stages land: `OperationInProgress` (C4), `DeliveryUnknown` (C5), `Authentication` and `Permission` (C7). The `code`/`name` values are the shared-contract categories; `"Configuration"` and `"ProtocolError"` complete the eleven.
+
+Never exported: `ConnectionHandler`, `ConnectionHandle`, `MessageDecoder`, `encodeClientCommand`, `decodeServerMessage`, Zod schemas, `NODE_PUB`, any signing facility.
+
+### Minimalism constraints (binding for C4–C7)
+
+- `Client` is a stateless configuration holder with exactly one method, `channel()`. It gains no registry, shared state or connection pool.
+- One `Subscription<T>` type serves message and presence interests (`Subscription<never>` yields nothing; `cancel()` is the point). No second handle type and no `Segment` class.
+- No error hierarchy; only the code-union widening above.
+- No reconnect or limit knobs in `ClientOptions`. Shared-contract defaults (10 retries, full jitter, 64-command/1 MiB writer, 256-delivery/1 MiB queue) are authoritative and non-configurable in v1. Only the two spec-marked-configurable timeouts are options.
+- No event framework: `events()` is one bounded async iterable of a two-arm union.
+- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement.
+
 ## Lifecycle and ownership (SDK-03–08)
 
 Construction is side-effect free. Each explicitly created channel handle owns one socket; segment interests share it. State changes follow idle → connecting → connected, unexpected loss → reconnecting → connected/failed, and explicit close → closing → closed. Closed is terminal; failed requires explicit connect. Concurrent connect rejects with OperationInProgress. Connected confirms only WebSocket establishment.
@@ -52,7 +148,7 @@ The aggregate delivery queue is bounded by 256 deliveries and 1 MiB, counting fa
 
 Presence queries are serialized, with a 10-second deadline and OperationInProgress for overlap. Match segment/page/perPage. Cancellation before submission releases the query slot; timeout/cancellation after submission retires that socket before another query and requests bounded recovery while preserving intent. No query retry. Unexpected replies remain unsolicited protocol events. SERVER_MSG is a channel-wide raw notice, not a typed join/leave event or receipt.
 
-Restore message interests then presence interests in registration order. Recovery permits 10 retries, full jitter in [0, min(30 seconds, 500 ms × 2^retryIndex)], beginning at index zero; reset after 60 seconds connected. Each attempt requests fresh credentials. Deterministic configuration/permission failures, protocol corruption and explicit close do not retry. Hidden browser handshake status stays unknown. Recovery reports possible gaps and duplicates; preserve arrival order with no implicit deduplication, durable cursor or global ordering claim.
+Restore message interests then presence interests in registration order. Recovery permits 10 retries, full jitter in [0, min(30 seconds, 500 ms × 2^retryIndex)], beginning at index zero; reset after 60 seconds connected. Each attempt requests fresh credentials. Deterministic configuration/permission failures, protocol corruption and explicit close do not retry. Hidden browser handshake status stays unknown. Recovery reports possible gaps and duplicates; preserve arrival order with no durable cursor or global ordering claim. Message delivery is deduplicated by server-assigned id within the bounded REV-01 window; duplicates beyond it remain possible.
 
 C3 implements an internal native transport factory and per-attempt credential acquisition. See [transport contract](transport.md). C4 owns channel state and queues; C7 adds monotonic outage measurement and jittered recovery.
 
