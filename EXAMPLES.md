@@ -1,8 +1,12 @@
 # @useceleris/client — consumer examples
 
-> **Status: the lifecycle and reconnect surface (C4) is implemented — Setup, Connect and Error handling below run today.** Publish, Subscribe and Presence remain target API for C5/C6 and do not run yet. This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples.
+> **Status: the channel lifecycle and reconnect surface (C4) is implemented — Setup, Connect and Error handling below run today.** Segments, publish, subscribe and presence (C5/C6) are target API and do not run yet. This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples.
 
 Credentials are always minted by a trusted server. The browser never sees a signing secret; it fetches short-lived opaque credentials from the application's own authenticated endpoint.
+
+## The model in three sentences
+
+A `Channel` is **one WebSocket client** — creating another `Channel`, even for the same reference, opens another socket. Every segment of that channel is multiplexed over that single connection, and connecting automatically makes you a member of the `"default"` segment. `Segment` handlers are lightweight proxies over the channel connection: create as many as you like for the same segment, they all share the one socket and one interest count — they never own connections of their own.
 
 ## Setup (browser or server runtime)
 
@@ -30,12 +34,12 @@ const client = createClient({
 });
 ```
 
-`createClient` performs no network work. `client.channel()` is also side-effect free; nothing connects until `connect()`.
+`createClient` performs no network work. `client.channel()` and `channel.segment()` are also side-effect free; nothing connects until `connect()`.
 
 ## Connect and observe lifecycle
 
 ```ts
-const channel = client.channel("room-42");
+const channel = client.channel("room-42"); // this handle = one WebSocket client
 
 // events() returns the channel's single ChannelEventHandler.
 // Each on* call registers a listener and returns its dispose function.
@@ -52,32 +56,64 @@ events.onRecovery((recovery) => {
 });
 
 events.onError((error) => {
-  // Async terminal failures (socket error, protocol violation).
-  // The state moves to "failed"; call connect() to resume.
+  // Async failures: socket errors, protocol violations, and server
+  // error frames (which do NOT close the connection).
   console.error(error.code, error.message);
 });
 
-await channel.connect(); // resolves when the WebSocket is open
+await channel.connect(); // opens the socket; you are now a member of "default"
 console.log(channel.state); // "connected"
 
 stopStates(); // dispose one listener; idempotent
 ```
 
-A lost connection retries automatically with fresh credentials (10 attempts, full jitter). `failed` is not terminal — call `connect()` again explicitly. `close()` is terminal and idempotent:
+A lost connection retries automatically with fresh credentials (10 attempts, full jitter). `failed` is not terminal — call `connect()` again explicitly. `close()` is terminal, idempotent, and closes every segment handler with it:
 
 ```ts
-await channel.close(); // ≤5 s graceful budget; channel is done
+await channel.close(); // ≤5 s graceful budget; channel and its segments are done
 ```
 
-## Publish
+## Segments (target API — C5)
 
 ```ts
-const bytes = new TextEncoder().encode(JSON.stringify({ hello: "world" }));
+// Proxies over the SAME connection — no new sockets here.
+const lobby = channel.segment(); // the "default" segment; already a member
+const chat = channel.segment("chat");
+const chatAgain = channel.segment("chat"); // same segment, same shared interest
 
+// Receive: listeners see this segment's messages on this channel.
+const stopChat = chat.onMessage((message) => {
+  // message.segmentId === "chat"; timestamp is bigint; payload is Uint8Array.
+  const body = JSON.parse(new TextDecoder().decode(message.payload));
+  console.log(message.messageId, body);
+});
+
+// Join for messages (sends SUB; a real server-side operation — the server
+// spawns a per-segment listener with its own replay cursor).
+const membership = chat.subscribe();
+
+// Publish to this segment. Resolution = the local socket ACCEPTED the bytes.
+// NOT a server receipt. Note: publishing auto-joins the segment server-side,
+// even without subscribe() — you'll appear in its presence.
+await chat.publish({
+  payload: new TextEncoder().encode(JSON.stringify({ hello: "world" })),
+});
+
+// The default segment needs no subscribe() — membership came with connect().
+lobby.onMessage((message) => console.log("lobby:", message.messageId));
+
+// Tear down: dispose listeners, cancel the interest. When the LAST interest
+// for a non-default segment on this channel is cancelled, UNSUB is sent.
+// The default segment is never remote-unsubscribed (the server refuses).
+stopChat();
+membership.cancel(); // idempotent
+```
+
+Error handling on publish:
+
+```ts
 try {
-  await channel.publish({ payload: bytes, segmentId: "chat" });
-  // Resolution means the local socket ACCEPTED the bytes.
-  // It is NOT a server receipt or delivery guarantee.
+  await chat.publish({ payload: bytes });
 } catch (error) {
   if (error.code === "NotConnected") {
     /* offline: nothing was queued */
@@ -91,59 +127,47 @@ try {
 }
 ```
 
-Payloads are bytes; serialize above the SDK (JSON shown, Protobuf works the same). Optional `messageId` is application metadata. Encoded commands over 128 KiB are rejected before any write.
+A permission-denied publish is different: it **resolves locally**, then the server's error frame arrives later through `events().onError` with no correlation to the call — the protocol has no acks.
 
-## Subscribe
-
-```ts
-const subscription = channel.subscribe("chat");
-
-const stopMessages = subscription.onMessage((message) => {
-  // message.messageId is always present (server-assigned) and the
-  // client has already deduplicated deliveries by id.
-  // message.timestamp is a bigint; message.payload is a Uint8Array.
-  const body = JSON.parse(new TextDecoder().decode(message.payload));
-  console.log(message.messageId, message.timestamp, body);
-});
-
-// Later: dispose the listener, or cancel the whole subscription.
-stopMessages(); // removes this listener only
-subscription.cancel(); // idempotent; releases the interest and all its listeners
-```
-
-Omitting the segment subscribes the default segment. Multiple subscriptions to the same segment on one channel are fine — each receives every delivery independently, and cancelling one preserves the others' interest. Dispatch is synchronous in registration order; a throwing listener is contained and reported through `events().onError` without blocking other listeners.
-
-## Presence
+## Presence (target API — C6)
 
 ```ts
-// Register presence interest (join/leave notices are NOT typed events).
-const presence = channel.subscribePresence("chat");
+const chat = channel.segment("chat");
 
-// Raw server notices — prose text from the server, delivered as bytes
-// through the channel event handler. Never parse this prose into
-// structured events.
+// Presence interest. Server-side this ALSO joins the segment for messages;
+// cancelling presence does not leave it. Presence is a facet of a joined
+// segment, not an independent subscription.
+const watching = chat.subscribePresence();
+
+// Join/leave notices arrive as raw prose SERVER_MSG at the CHANNEL level —
+// the wire does not tag them with a segment. Never parse prose into events.
 const stopNotices = channel.events().onNotice((notice) => {
   console.log("notice:", new TextDecoder().decode(notice.payload));
 });
 
-// Paginated snapshot: serialized, one in flight per channel, 10 s deadline.
-const page = await channel.presenceList({
-  segmentId: "chat",
-  page: 1,
-  perPage: 50,
-});
+// Paginated snapshot: one in-flight query per CHANNEL, 10 s deadline.
+const page = await chat.presenceList({ page: 1, perPage: 50 });
 for (const connection of page.connections) {
   console.log(connection.tokenReference, connection.connectionId);
 }
 // Out-of-range pages return raw metadata with from > to and no entries.
 
-presence.cancel();
+watching.cancel();
 stopNotices();
 ```
 
+## Multiple connections
+
+```ts
+const a = client.channel("room-42");
+const b = client.channel("room-42"); // a SECOND WebSocket client
+```
+
+Two channels are fully independent — separate sockets, memberships, presence entries and replay cursors, even under one token. Echo suppression is per connection: `b` receives what `a` publishes.
+
 ## Error handling
 
-All SDK failures carry a stable `code` matching the shared-contract category — match on `code`, never on message text:
+All SDK failures carry a stable `code` — match on `code`, never on message text:
 
 ```ts
 try {
@@ -161,4 +185,4 @@ try {
 
 ## What this API will never do
 
-No offline queue, no automatic resend of publishes, no server receipts, no durable history, no global ordering, no typed presence events, no signing in the browser.
+No offline queue, no automatic resend of publishes, no server receipts or acks (the protocol has none — server responses are untagged prose), no durable history, no global ordering, no typed presence events, no signing in the browser.

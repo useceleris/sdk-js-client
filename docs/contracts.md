@@ -72,36 +72,41 @@ export type ChannelState =
   | "closed";
 
 export class Channel {
+  // One Channel = ONE WebSocket client. Creating another Channel (even for the
+  // same reference) creates another socket. All segments of this channel are
+  // multiplexed over this single connection.
   readonly state: ChannelState;
   connect(options?: { signal?: AbortSignal }): Promise<void>; // OperationInProgress on concurrent
-  close(): Promise<void>; // idempotent, terminal, 5 s budget
+  close(): Promise<void>; // idempotent, terminal, 5 s budget; closes every segment handler
+  segment(segmentId?: string): Segment; // side-effect-free proxy; omitted = "default"
+  events(): ChannelEventHandler; // channel-level: state, recovery, errors, untagged notices
+}
+
+export class Segment {
+  // A Segment handler is a lightweight PROXY over its channel's single
+  // connection — it never owns a socket. Any number of handler instances for
+  // the same segmentId share the channel connection and one interest
+  // ref-count; per-handler state is only its own listeners. This mirrors the
+  // server, which keeps one socket plus a per-connection map of segment
+  // handles with independent replay cursors (SEG-01).
+  readonly segmentId: string;
+  subscribe(): Subscription; // joins for messages (SUB); ref-counted channel-wide
+  onMessage(listener: (message: Message) => void): () => void; // this segment's deliveries on this channel
   publish(options: {
     payload: Uint8Array; // empty valid; ≤128 KiB encoded
-    segmentId?: string; // default segment when omitted
     messageId?: string; // optional; empty rejected
     signal?: AbortSignal;
-  }): Promise<void>; // resolves on local acceptance only
-  subscribe(segmentId?: string): MessageSubscription; // ref-counted message interest
-  subscribePresence(segmentId?: string): Subscription; // interest only; notices arrive raw
-  events(): ChannelEventHandler; // the channel's single stable handler
+  }): Promise<void>; // resolves on local acceptance only; server auto-joins the segment
+  subscribePresence(): Subscription; // PRES_SUB; server also joins the segment for messages
   presenceList(options: {
-    segmentId?: string;
     page: number; // 1..2147483647, reject not clamp
     perPage: number; // 1..100, reject not clamp
     signal?: AbortSignal;
-  }): Promise<PresencePage>; // serialized; one in flight per channel
+  }): Promise<PresencePage>; // serialized; one in flight per CHANNEL
 }
 
 export interface Subscription {
   cancel(): void; // idempotent dispose; releases this interest
-}
-
-export interface MessageSubscription extends Subscription {
-  // Deliveries for THIS subscription's segment. Multiple subscriptions to the
-  // same segment on the same channel are permitted; each receives every
-  // delivery independently. Every on* call registers one listener and returns
-  // its dispose function. cancel() disposes all of this subscription's listeners.
-  onMessage(listener: (message: Message) => void): () => void;
 }
 
 export interface ChannelEventHandler {
@@ -162,11 +167,26 @@ Never exported: `ConnectionHandler`, `ConnectionHandle`, `MessageDecoder`, `enco
 ### Minimalism constraints (binding for C4–C7)
 
 - `Client` is a stateless configuration holder with exactly one method, `channel()`. It gains no registry, shared state or connection pool.
-- Two subscription shapes only: `Subscription` (`cancel()`) for presence interest, `MessageSubscription` adding `onMessage`. No `Segment` class, no per-listener handle objects — dispose functions are the handle.
+- `Segment` is a stateless proxy: it holds only its `segmentId`, a reference to its channel, and its own listeners. All connection state, interest ref-counts, dedup, writer bounds and presence-query serialization live on `Channel`. `segment()` never opens a socket, sends a command, or allocates server resources; network effects come only from `subscribe()`, `publish()`, `subscribePresence()` and `presenceList()`. (SEG-01 supersedes the earlier "no `Segment` class" rule.)
+- One `Subscription` shape (`cancel()`); dispose functions are the listener handle.
 - No error hierarchy; only the code-union widening above.
 - No reconnect or limit knobs in `ClientOptions`. Shared-contract defaults (10 retries, full jitter, 64-command/1 MiB writer) are authoritative and non-configurable in v1. Only the two spec-marked-configurable timeouts are options.
 - No event framework: `ChannelEventHandler` has exactly four named `on*` methods. No generic `on(name, fn)`, no string event keys, no wildcard listeners, no once/prepend variants, no listener-count APIs. Dispatch is synchronous in registration order with contained listener exceptions.
-- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement or a recorded local decision (DEV-01, REV-01).
+- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement or a recorded local decision (DEV-01, REV-01, SEG-01).
+
+## Segment model (SEG-01; owner directive 2026-09-20, verified against celeris-realtime source)
+
+One channel connection is one WebSocket; every segment of that channel is multiplexed over it. Connecting automatically makes the connection a member of the default segment `"default"` (server `DEFAULT_SEGMENTS`, a list — the client predicate is a set-membership test, not an equality check). Segment handlers are subscribers-and-proxies over the channel connection: many handler instances may point at the same channel, but each additional `Channel` is a separate WebSocket client. Server-source facts that bind the design:
+
+- The server mirrors this shape exactly: one socket plus a per-connection `HashMap<SegmentId, SegmentHandle>`, each joined segment served by its own listener task with an independent replay cursor. Replay applies per segment JOIN, not per connect — a late `subscribe()` on a live channel replays per the token's replay mode.
+- `MSG` always carries `segment_id`, so message demux to handlers is exact. `SERVER_MSG` and `-Err` carry no segment id — all acks, refusals and presence prose are unroutable and surface only channel-wide (`events().onNotice`/`onError`). There are no correlation ids; nothing gates on prose.
+- `PUB` auto-joins the segment server-side: publishing from a handler makes the connection a member (visible in presence, and delivering messages when the token has read access) even with no local subscription. Documented, not hidden.
+- `PRES_SUB` force-joins the segment for messages too; `PRES_UNSUB` removes only the presence interest — message membership survives. Presence is a facet of a joined segment, not an independent subscription.
+- Segments are created lazily on first SUB/PUB/PRES_SUB and evaporate when the last member leaves and the backlog idles; UNSUB on an empty segment gets prose "does not exist". Segment names are nearly unconstrained server-side (nonempty UTF-8); the client keeps its stricter CR/LF/lone-surrogate rejection.
+- The default segment cannot be remote-unsubscribed (server refuses with prose); handler cancellation on it is local-only.
+- Read access is evaluated once at join: a write-only token is a member that receives nothing. No client warning is synthesized; C8 verifies against real tokens.
+- Multiple connections from one token are independent per connection (membership, presence, cursors); echo suppression excludes by (token, connection) pair, so a sibling connection of the same token receives that token's publishes. Rate-limit keys are per token, shared across its connections.
+- Joining a segment spawns a real server task: handler `subscribe()` is a network operation, not a local filter.
 
 ## Lifecycle and ownership (SDK-03–08)
 
