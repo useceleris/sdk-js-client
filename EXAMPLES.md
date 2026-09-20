@@ -37,21 +37,30 @@ const client = createClient({
 ```ts
 const channel = client.channel("room-42");
 
-// Observe state changes and recovery through one bounded stream.
+// events() returns the channel's single ChannelEventHandler.
+// Each on* call registers a listener and returns its dispose function.
 const events = channel.events();
-void (async () => {
-  for await (const event of events) {
-    if (event.kind === "state") console.log("state:", event.state);
-    if (event.kind === "recovery") {
-      // Reconnected. Replay may have gaps; duplicates beyond the
-      // client's bounded dedup window are possible.
-      console.log("recovered after retry", event.retryIndex);
-    }
-  }
-})();
+
+const stopStates = events.onStateChange((state) => {
+  console.log("state:", state);
+});
+
+events.onRecovery((recovery) => {
+  // Reconnected. Replay may have gaps; duplicates beyond the
+  // client's bounded dedup window are possible.
+  console.log("recovered after retry", recovery.retryIndex);
+});
+
+events.onError((error) => {
+  // Async terminal failures (socket error, protocol violation).
+  // The state moves to "failed"; call connect() to resume.
+  console.error(error.code, error.message);
+});
 
 await channel.connect();           // resolves when the WebSocket is open
 console.log(channel.state);        // "connected"
+
+stopStates();                      // dispose one listener; idempotent
 ```
 
 A lost connection retries automatically with fresh credentials (10 attempts, full jitter). `failed` is not terminal — call `connect()` again explicitly. `close()` is terminal and idempotent:
@@ -83,24 +92,20 @@ Payloads are bytes; serialize above the SDK (JSON shown, Protobuf works the same
 ```ts
 const subscription = channel.subscribe("chat");
 
-try {
-  for await (const message of subscription) {
-    // message.messageId is always present (server-assigned) and the
-    // client has already deduplicated deliveries by id.
-    // message.timestamp is a bigint; message.payload is a Uint8Array.
-    const body = JSON.parse(new TextDecoder().decode(message.payload));
-    console.log(message.messageId, message.timestamp, body);
-  }
-  // Normal end: subscription was cancelled.
-} catch (error) {
-  // Terminal iterator error, e.g. Backpressure after queue overflow:
-  // the channel is now "failed"; call channel.connect() to resume.
-} finally {
-  subscription.cancel();           // idempotent; always safe in finally
-}
+const stopMessages = subscription.onMessage((message) => {
+  // message.messageId is always present (server-assigned) and the
+  // client has already deduplicated deliveries by id.
+  // message.timestamp is a bigint; message.payload is a Uint8Array.
+  const body = JSON.parse(new TextDecoder().decode(message.payload));
+  console.log(message.messageId, message.timestamp, body);
+});
+
+// Later: dispose the listener, or cancel the whole subscription.
+stopMessages();                    // removes this listener only
+subscription.cancel();             // idempotent; releases the interest and all its listeners
 ```
 
-Omitting the segment subscribes the default segment. A slow consumer that overflows the bounded delivery queue terminates iterators with `Backpressure` — nothing is silently dropped.
+Omitting the segment subscribes the default segment. Multiple subscriptions to the same segment on one channel are fine — each receives every delivery independently, and cancelling one preserves the others' interest. Dispatch is synchronous in registration order; a throwing listener is contained and reported through `events().onError` without blocking other listeners.
 
 ## Presence
 
@@ -108,14 +113,12 @@ Omitting the segment subscribes the default segment. A slow consumer that overfl
 // Register presence interest (join/leave notices are NOT typed events).
 const presence = channel.subscribePresence("chat");
 
-// Raw server notices — prose text from the server, delivered as bytes.
-// Never parse this prose into structured events.
-const notices = channel.notices();
-void (async () => {
-  for await (const notice of notices) {
-    console.log("notice:", new TextDecoder().decode(notice.payload));
-  }
-})();
+// Raw server notices — prose text from the server, delivered as bytes
+// through the channel event handler. Never parse this prose into
+// structured events.
+const stopNotices = channel.events().onNotice((notice) => {
+  console.log("notice:", new TextDecoder().decode(notice.payload));
+});
 
 // Paginated snapshot: serialized, one in flight per channel, 10 s deadline.
 const page = await channel.presenceList({ segmentId: "chat", page: 1, perPage: 50 });
@@ -125,7 +128,7 @@ for (const connection of page.connections) {
 // Out-of-range pages return raw metadata with from > to and no entries.
 
 presence.cancel();
-notices.cancel();
+stopNotices();
 ```
 
 ## Error handling

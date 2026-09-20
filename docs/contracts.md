@@ -38,9 +38,11 @@ The reviewed [server signer](../../sdk-js-server/src/signer.ts) returns a synchr
 
 This is recorded client-side compatibility review, not a claim of bilateral acknowledgement or changes to S0. Server-owner acknowledgement remains pending. Provider cancellation rejects acquisition and suppresses stale results using attempt identity; an uncooperative provider cannot create a late socket. The server signer itself is synchronous and has no cancellation API. Codec operations likewise remain synchronous.
 
-## Public API surface (SDK-03–09; decided 2026-09-20)
+## Public API surface (SDK-03–09; decided 2026-09-20, revised same day to handler-based events)
 
 Names for the C4–C7 public surface are now fixed. The entrypoint stays empty until C4 exports the first subset. Zod inference never crosses into public declarations: every exported type below is hand-written, and internal `ClientCommand`/`ServerMessage` shapes map onto `Message`, `ServerNotice` and `PresencePage`. Consumer usage is mirrored in [EXAMPLES.md](../EXAMPLES.md), which must change in the same commit as this section.
+
+**DEV-01 (recorded deviation from specs conventions):** events are consumed through handler objects with named `on*` registration methods, not async iterables. The specs' JavaScript conventions mandate "bounded async iterables"; this local decision supersedes that for this package, pending spec revision. Consequence: delivery is synchronous listener dispatch — there is no consumer-side delivery queue, so the shared contract's 256-delivery/1 MiB queue and its `Backpressure` overflow path do not apply to inbound delivery (writer bounds are unchanged). A slow listener blocks dispatch instead of growing a queue; native receive buffering remains the platform limit. Listener exceptions are contained and cannot corrupt SDK state.
 
 ```ts
 export function createClient(options: ClientOptions): Client;
@@ -72,10 +74,9 @@ export class Channel {
     messageId?: string;                           // optional; empty rejected
     signal?: AbortSignal;
   }): Promise<void>;                              // resolves on local acceptance only
-  subscribe(segmentId?: string): Subscription<Message>;         // ref-counted message interest
-  subscribePresence(segmentId?: string): Subscription<never>;   // interest only; notices arrive raw
-  notices(): Subscription<ServerNotice>;                        // raw SERVER_MSG stream, incl. presence prose
-  events(): Subscription<ChannelEvent>;                         // state changes + recovery events
+  subscribe(segmentId?: string): MessageSubscription;           // ref-counted message interest
+  subscribePresence(segmentId?: string): Subscription;          // interest only; notices arrive raw
+  events(): ChannelEventHandler;                                // the channel's single stable handler
   presenceList(options: {
     segmentId?: string;
     page: number;                                 // 1..2147483647, reject not clamp
@@ -84,8 +85,26 @@ export class Channel {
   }): Promise<PresencePage>;                      // serialized; one in flight per channel
 }
 
-export interface Subscription<T> extends AsyncIterable<T> {
-  cancel(): void;                                 // idempotent dispose; bounded queue behind it
+export interface Subscription {
+  cancel(): void;                                 // idempotent dispose; releases this interest
+}
+
+export interface MessageSubscription extends Subscription {
+  // Deliveries for THIS subscription's segment. Multiple subscriptions to the
+  // same segment on the same channel are permitted; each receives every
+  // delivery independently. Every on* call registers one listener and returns
+  // its dispose function. cancel() disposes all of this subscription's listeners.
+  onMessage(listener: (message: Message) => void): () => void;
+}
+
+export interface ChannelEventHandler {
+  // Named registration only — no generic on(name, fn), no string event keys.
+  // Each method registers one listener, dispatched in registration order,
+  // and returns its idempotent dispose function.
+  onStateChange(listener: (state: ChannelState) => void): () => void;
+  onRecovery(listener: (event: RecoveryEvent) => void): () => void;
+  onNotice(listener: (notice: ServerNotice) => void): () => void;   // raw SERVER_MSG, incl. presence prose
+  onError(listener: (error: ConnectionError | ProtocolError) => void): () => void; // async terminal failures
 }
 
 export type Message = {
@@ -110,14 +129,16 @@ export type PresenceConnection = {
   readonly connectionId: string;
   readonly timestamp: bigint;
 };
-export type ChannelEvent =
-  | { readonly kind: "state"; readonly state: ChannelState }
-  | { readonly kind: "recovery"; readonly retryIndex: number; readonly possibleGaps: true; readonly possibleDuplicates: true };
+export type RecoveryEvent = {
+  readonly retryIndex: number;
+  readonly possibleGaps: true;
+  readonly possibleDuplicates: true;              // beyond the REV-01 dedup window
+};
 
 export type { Credentials, CredentialRequest, CredentialProvider }; // shapes above, exported from C4
 ```
 
-There is no `"error"` event kind: operation errors reject their Promises, and a subscription failure terminates the iterator with the error (terminal iterator state per the delivery-queue contract).
+Operation errors reject their Promises. Asynchronous terminal failures (native socket error, protocol violation, callback containment) surface through `events().onError` and drive the state to `failed` via `onStateChange`; nothing is silently dropped.
 
 **REV-01 (2026-09-20, user-reported Celeris update, spec revision pending):** the server now always assigns a MSG id, and the client owns idempotent delivery. Public `Message.messageId` is non-null, and C5 deduplicates deliveries by id within a bounded, non-configurable per-channel window before fanout; C7 relies on that window to absorb replay duplicates, and duplicates beyond the window remain possible and stay declared in the recovery event. The C2 decoder keeps its nullable-id tolerance until C8 verifies the updated server; a null id then becomes a protocol violation at the delivery layer. This supersedes the earlier "no implicit deduplication" wording below for message delivery; ordering is still preserved and no durable cursor or global ordering claim follows.
 
@@ -128,11 +149,11 @@ Never exported: `ConnectionHandler`, `ConnectionHandle`, `MessageDecoder`, `enco
 ### Minimalism constraints (binding for C4–C7)
 
 - `Client` is a stateless configuration holder with exactly one method, `channel()`. It gains no registry, shared state or connection pool.
-- One `Subscription<T>` type serves message and presence interests (`Subscription<never>` yields nothing; `cancel()` is the point). No second handle type and no `Segment` class.
+- Two subscription shapes only: `Subscription` (`cancel()`) for presence interest, `MessageSubscription` adding `onMessage`. No `Segment` class, no per-listener handle objects — dispose functions are the handle.
 - No error hierarchy; only the code-union widening above.
-- No reconnect or limit knobs in `ClientOptions`. Shared-contract defaults (10 retries, full jitter, 64-command/1 MiB writer, 256-delivery/1 MiB queue) are authoritative and non-configurable in v1. Only the two spec-marked-configurable timeouts are options.
-- No event framework: `events()` is one bounded async iterable of a two-arm union.
-- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement.
+- No reconnect or limit knobs in `ClientOptions`. Shared-contract defaults (10 retries, full jitter, 64-command/1 MiB writer) are authoritative and non-configurable in v1. Only the two spec-marked-configurable timeouts are options.
+- No event framework: `ChannelEventHandler` has exactly four named `on*` methods. No generic `on(name, fn)`, no string event keys, no wildcard listeners, no once/prepend variants, no listener-count APIs. Dispatch is synchronous in registration order with contained listener exceptions.
+- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement or a recorded local decision (DEV-01, REV-01).
 
 ## Lifecycle and ownership (SDK-03–08)
 
@@ -144,7 +165,7 @@ Publishing completes on local native WebSocket acceptance, with no server receip
 
 Message and presence interests have separate per-segment reference counts. Last presence cancellation sends PRES_UNSUB. UNSUB is sent only when both counts reach zero on a non-default segment; default retains remote membership. Cancellation releases local intent immediately. If required cleanup cannot enter a full writer, invalidate the socket and enter failed with Backpressure rather than leave stale remote interest silently active. No reserved unbounded cleanup queue.
 
-The aggregate delivery queue is bounded by 256 deliveries and 1 MiB, counting fanout copies. Overflow aborts the socket, enters failed, and exposes Backpressure/possible loss through terminal iterator state outside the full queue. State/error inspection must remain available; no automatic reconnect loop for a slow consumer.
+Inbound delivery is synchronous listener dispatch (DEV-01): decoded messages fan out to registered listeners in registration order with no consumer-side delivery queue, so the shared contract's 256-delivery/1 MiB queue bound and its overflow path do not apply. Listener exceptions are contained per listener and reported through `onError` without corrupting SDK state. Native receive buffering remains the platform limit; writer bounds are unchanged.
 
 Presence queries are serialized, with a 10-second deadline and OperationInProgress for overlap. Match segment/page/perPage. Cancellation before submission releases the query slot; timeout/cancellation after submission retires that socket before another query and requests bounded recovery while preserving intent. No query retry. Unexpected replies remain unsolicited protocol events. SERVER_MSG is a channel-wide raw notice, not a typed join/leave event or receipt.
 
