@@ -388,7 +388,7 @@ describe("delivery and dedup", () => {
       .receive(
         utf8('@SERVER_MSG\n:1\n$29\nSuccessfully connected to "x"\n').buffer,
       );
-    sockets.at(-1)!.receive(utf8("-Err\nPermissionDeniedError\ndenied").buffer);
+    sockets.at(-1)!.receive(utf8("-Err\nRateLimitError\nslow down").buffer);
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
 
     expect(errors).toHaveLength(1);
@@ -396,6 +396,31 @@ describe("delivery and dedup", () => {
       code: "Transport",
       message: "Server reported an error.",
     });
+    expect(JSON.stringify(errors[0])).not.toContain("slow down");
+    expect(channel.state).toBe("connected");
+    expect(delivered).toEqual(["id-1"]);
+  });
+
+  it("maps permission-denied error frames to the Permission code", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    const delivered: string[] = [];
+    channel.events().onError((error) => errors.push(error));
+    channel
+      .segment("chat")
+      .onMessage((message) => delivered.push(message.messageId));
+
+    // A denied publish resolves locally; the error arrives uncorrelated.
+    await channel.segment("chat").publish({ payload: utf8("x") });
+    sockets.at(-1)!.receive(utf8("-Err\nPermissionDeniedError\ndenied").buffer);
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: "Permission",
+      message: "Server denied permission.",
+    });
+    expect(JSON.stringify(errors[0])).not.toContain("denied");
     expect(channel.state).toBe("connected");
     expect(delivered).toEqual(["id-1"]);
   });

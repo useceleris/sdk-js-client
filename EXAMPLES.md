@@ -181,6 +181,15 @@ try {
       break;
   }
 }
+
+// Permission denials arrive asynchronously through events().onError with
+// code "Permission", uncorrelated to any command — the protocol has no acks.
+channel.events().onError((error) => {
+  if (error.code === "Permission") {
+    /* the token lacks access to something it tried */
+  }
+});
+}
 ```
 
 ## What this API will never do

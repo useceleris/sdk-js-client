@@ -599,8 +599,13 @@ export class Channel {
       case "ERROR":
         // The server never closes the socket on an error frame; report once
         // and remain connected. Denials arrive uncorrelated to any command.
+        // Known decoder-bounded error names map to specific codes; the
+        // handshake status itself is never observable, so Permission comes
+        // only from this wire source.
         this.emitError(
-          new ConnectionError("Transport", "Server reported an error."),
+          message.name === "PermissionDeniedError"
+            ? new ConnectionError("Permission", "Server denied permission.")
+            : new ConnectionError("Transport", "Server reported an error."),
         );
         return;
       case "SERVER_MSG":

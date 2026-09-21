@@ -34,7 +34,7 @@ Native errors expose no trusted handshake status or body. Error values never con
 
 ## C4 reconnect scheduler
 
-C4 owns automatic reconnect. It records original outage once, measures elapsed time with an injectable monotonic clock, and requests fresh credentials with `ceil(elapsed outage) + 5000` milliseconds of replay, capped at `4294967295` (silent cap; the truncation diagnostic is deferred with `onDiagnostic`). Failed retries keep the original outage time. C7 restores message and presence interests over this scheduler.
+C4 owns automatic reconnect. It records original outage once, measures elapsed time with an injectable monotonic clock, and requests fresh credentials with `ceil(elapsed outage) + 5000` milliseconds of replay, capped at `4294967295` (silent cap — `onDiagnostic` and its truncation diagnostic are dropped from v1 by recorded C7 decision). Failed retries keep the original outage time. The C5/C6 interest flush restores message then presence interests over this scheduler, verified end-to-end in C7.
 
 Retry defaults remain ten attempts, full jitter from 500 ms exponential base capped at 30 seconds, and retry-budget reset after 60 seconds connected. Explicit close stops recovery. Message interests restore before presence interests; publishes never resend automatically.
 

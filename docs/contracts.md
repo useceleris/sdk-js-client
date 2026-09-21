@@ -53,9 +53,9 @@ export type ClientOptions = {
   readonly allowInsecureLoopback?: boolean; // default false
   readonly connectTimeoutMs?: number; // default 15_000
   readonly presenceQueryTimeoutMs?: number; // default 10_000
-  // onDiagnostic is DEFERRED past C4: no DiagnosticEvent exists yet. It lands
-  // with its own decision in C7, together with the lookback-truncation
-  // diagnostic the C4 scheduler applies silently today.
+  // onDiagnostic is DROPPED from v1 (C7 decision): no DiagnosticEvent type
+  // exists. The events handler already carries every safe signal, and the
+  // reconnect scheduler's replay-lookback cap stays silent and documented.
 };
 
 export class Client {
@@ -160,7 +160,9 @@ Operation errors reject their Promises. Asynchronous terminal failures (native s
 
 **REV-01 (2026-09-20, user-reported Celeris update, spec revision pending):** the server now always assigns a MSG id (corroborated by server source: omitted ids are replaced with `msg_{node}_{ulid}` before fanout), and the client owns idempotent delivery. Public `Message.messageId` is non-null, and C5 deduplicates deliveries by id within a bounded, non-configurable per-channel window (a 1024-entry insertion-order id set) before fanout; ids are recorded even when no listener exists. The window survives reconnect and clears on each explicit `connect()`; C7 relies on it to absorb replay duplicates, and duplicates beyond the window remain possible and stay declared in the recovery event. **Lenient interim (owner decision):** a MSG whose decoded id is null is delivered with `messageId: ""` and bypasses dedup — no protocol violation — until C8 verifies the updated server; the strict null-is-violation rule takes over then. This supersedes the earlier "no implicit deduplication" wording below for message delivery; ordering is still preserved and no durable cursor or global ordering claim follows.
 
-Errors keep the existing three classes — `ConfigurationError`, `ProtocolError`, `ConnectionError` — with no new hierarchy, base class or `category` alias field. `ConnectionErrorCode` widens to cover the shared contract's remaining categories as their stages land: `OperationInProgress` (C4), `DeliveryUnknown` (C5), `Authentication` and `Permission` (C7). The `code`/`name` values are the shared-contract categories; `"Configuration"` and `"ProtocolError"` complete the eleven.
+Errors keep the existing three classes — `ConfigurationError`, `ProtocolError`, `ConnectionError` — with no new hierarchy, base class or `category` alias field. `ConnectionErrorCode` widened as stages landed: `OperationInProgress` (C4), `DeliveryUnknown` (C5), `Permission` (C7). Ten of the shared contract's eleven categories are realized (`"Configuration"` and `"ProtocolError"` come from the other two classes). **DEV-02:** `Authentication` is omitted — native WebSocket exposes the handshake HTTP status in no runtime, and no authentication-named wire error exists, so the category has no knowable source; it joins the union only when one appears (spec revision pending).
+
+C7 decisions: known server error names map to codes at the router — `PermissionDeniedError` becomes `ConnectionError("Permission", "Server denied permission.")`; every other name (RateLimitError, ParserError, SendError, unknown) stays the fixed Transport report. Messages remain fixed and server bytes never surface; the channel remains connected either way, and denials stay uncorrelated. `onDiagnostic` is dropped from v1 (recorded decision): no diagnostics hook or DiagnosticEvent ships, and the scheduler's silent replay-lookback cap remains documented behavior. Handshake failures keep bounded retries under Transport and are never labeled authorization failures.
 
 Never exported: `ConnectionHandler`, `ConnectionHandle`, `MessageDecoder`, `encodeClientCommand`, `decodeServerMessage`, Zod schemas, `NODE_PUB`, any signing facility.
 

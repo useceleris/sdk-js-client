@@ -11,6 +11,7 @@ import type {
   ServerNotice,
   Subscription,
 } from "../../src/channel";
+import type { ConnectionErrorCode } from "../../src/errors";
 import type { Segment } from "../../src/segment";
 import type { ClientOptions } from "../../src/client";
 import type {
@@ -145,6 +146,21 @@ describe("channel type contracts", () => {
       readonly connectTimeoutMs?: number;
       readonly presenceQueryTimeoutMs?: number;
     }>();
+  });
+
+  it("pins the realized error-code union", () => {
+    // Authentication stays out until a knowable source exists (DEV-02):
+    // native WebSocket exposes no handshake status in any runtime.
+    expectTypeOf<ConnectionErrorCode>().toEqualTypeOf<
+      | "Timeout"
+      | "Cancelled"
+      | "Transport"
+      | "NotConnected"
+      | "Backpressure"
+      | "OperationInProgress"
+      | "DeliveryUnknown"
+      | "Permission"
+    >();
   });
 
   it("rejects mutation of readonly event fields", () => {

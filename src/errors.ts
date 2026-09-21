@@ -27,7 +27,8 @@ export type ConnectionErrorCode =
   | "NotConnected"
   | "Backpressure"
   | "OperationInProgress"
-  | "DeliveryUnknown";
+  | "DeliveryUnknown"
+  | "Permission";
 
 export class ConnectionError extends Error {
   constructor(
