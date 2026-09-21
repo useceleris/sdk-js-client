@@ -32,6 +32,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
+    "test:celeris": "vitest run --config vitest.celeris.config.ts",
     "test:watch": "vitest",
     "check": "npm run build && npm run typecheck && npm run format:check && npm run test"
   },
