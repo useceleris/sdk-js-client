@@ -33,7 +33,9 @@ describe("celeris messaging", () => {
     const receiverSaw = collect(receiver, "chat");
     await settle();
 
-    await publisher.segment("chat").publish({ payload: utf8("hello-바이너리") });
+    await publisher
+      .segment("chat")
+      .publish({ payload: utf8("hello-바이너리") });
 
     const message = await nextMessage(
       receiver.segment("chat"),

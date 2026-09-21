@@ -18,7 +18,7 @@ export class MessageDecoder {
   constructor(private readonly bytes: Uint8Array) {}
 
   decode(): ServerMessage {
-    const message = this.readMessage(0);
+    const message = this.readMessage(0, true);
 
     if (this.offset !== this.bytes.length) {
       throw new ProtocolError(
@@ -317,13 +317,13 @@ export class MessageDecoder {
     return connections;
   } // end method readConnections
 
-  private readMessage(depth: number): ServerMessage {
+  private readMessage(depth: number, tail: boolean): ServerMessage {
     const fieldStartOffset = this.offset;
     switch (this.readMarker("message")) {
       case "*".charCodeAt(0):
-        return this.readMessageArray(depth);
+        return this.readMessageArray(depth, tail);
       case "-".charCodeAt(0):
-        return this.readErrorMessage(depth);
+        return this.readErrorMessage(depth, tail);
       case "@".charCodeAt(0):
         return this.readCommandMessage(depth);
       default:
@@ -335,21 +335,24 @@ export class MessageDecoder {
     }
   } // end method readMessage
 
-  private readMessageArray(depth: number): ServerMessage {
+  private readMessageArray(depth: number, tail: boolean): ServerMessage {
     const length = this.readArrayLength(depth, "messages", true);
     const messages: ServerMessage[] = [];
 
     for (let index = 0; index < length; index += 1) {
-      messages.push(this.readMessage(depth + 1));
+      messages.push(this.readMessage(depth + 1, tail && index === length - 1));
     }
 
     return { command: "ARRAY", messages };
   } // end method readMessageArray
 
-  private readErrorMessage(depth: number): ServerMessage {
+  private readErrorMessage(depth: number, tail: boolean): ServerMessage {
     const fieldStartOffset = this.offset - 1;
-    // Errors have no length or final delimiter. Only a whole message is safe.
-    if (depth !== 0) {
+    // Errors have no length or final delimiter, so their content is the rest
+    // of the transport message. That boundary is unambiguous only when every
+    // enclosing array is consuming its final element — which is how the
+    // server's output batching actually wraps errors (C8 observation, D-002).
+    if (depth !== 0 && !tail) {
       throw new ProtocolError(
         "Error inside array has ambiguous boundaries.",
         "error",

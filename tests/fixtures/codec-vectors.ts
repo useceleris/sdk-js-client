@@ -227,6 +227,33 @@ export const decodingVectors: {
       message: utf8("text\n-Err\nmore"),
     },
   },
+  {
+    // The server's output batching wraps errors as the final array element
+    // (C8 live observation); the tail position is boundary-unambiguous.
+    name: "batched single error",
+    bytes: utf8("*1\n-Err\nPermissionDeniedError\ndenied"),
+    expected: {
+      command: "ARRAY",
+      messages: [
+        {
+          command: "ERROR",
+          name: "PermissionDeniedError",
+          message: utf8("denied"),
+        },
+      ],
+    },
+  },
+  {
+    name: "error as final batched element",
+    bytes: utf8("*2\n@SERVER_MSG\n:1\n$2\nok\n-Err\nRateLimitError\nslow"),
+    expected: {
+      command: "ARRAY",
+      messages: [
+        { command: "SERVER_MSG", timestamp: 1n, payload: utf8("ok") },
+        { command: "ERROR", name: "RateLimitError", message: utf8("slow") },
+      ],
+    },
+  },
 ];
 
 export const malformedVectors = [
@@ -257,8 +284,9 @@ export const malformedVectors = [
   "@MSG\n+u\n+s\n+\n:1\n$0\n\n",
   "@MSG\n+u\rX\n+s\n$-1\n:1\n$0\n\n",
   "@MSG\n$3\nu\ns\n+s\n$-1\n:1\n$0\n\n",
-  "*1\n-Err\nParserError\nmessage",
   "*2\n-Err\nParserError\none-Err\nParserError\ntwo",
+  "*2\n-Err\nParserError\nnot-last\n@SERVER_MSG\n:1\n$0\n\n",
+  "*2\n*1\n-Err\nParserError\ninner-not-tail\n@SERVER_MSG\n:1\n$0\n\n",
   "-Other\nParserError\nmessage",
   "-Err\nBad\rName\nmessage",
   "@PRES_LIST_RESPONSE\n+s\n:0\n:1\n:1\n:0\n:0\n*1\n*2\n+u\n+c\n",

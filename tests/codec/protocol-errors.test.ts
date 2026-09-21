@@ -114,7 +114,8 @@ it.each([
     offset: 0,
   },
   {
-    wire: "*1\n-Err\nParserError\nsecret",
+    // A tail-position error is valid (C8, D-002); a non-final one is not.
+    wire: "*2\n-Err\nParserError\nsecret\n@SERVER_MSG\n:1\n$0\n\n",
     message: "Error inside array has ambiguous boundaries.",
     field: "error",
     offset: 3,

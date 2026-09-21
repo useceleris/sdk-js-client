@@ -26,7 +26,8 @@ export function signCredentials(
   const wirePayload: Record<string, unknown> = {
     timestamp: payload.timestamp ?? Date.now(),
   };
-  if (payload.reference !== undefined) wirePayload.reference = payload.reference;
+  if (payload.reference !== undefined)
+    wirePayload.reference = payload.reference;
   if (payload.channelReferences !== undefined)
     wirePayload.channel_references = payload.channelReferences;
   if (payload.tokenPermission !== undefined)

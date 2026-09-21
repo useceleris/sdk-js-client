@@ -24,7 +24,7 @@ export type ChannelError = ConfigurationError | ConnectionError | ProtocolError;
 export type Message = {
   readonly tokenReference: string;
   readonly segmentId: string;
-  readonly messageId: string; // "" for the lenient null-id interim (REV-01)
+  readonly messageId: string; // server-assigned, always present (REV-01, C8-verified)
   readonly timestamp: bigint;
   readonly payload: Uint8Array;
 };
@@ -652,15 +652,24 @@ export class Channel {
   private deliverMessage(
     message: Extract<ServerMessage, { command: "MSG" }>,
   ): void {
-    // Ids are recorded before fanout, even with no listeners (REV-01).
-    // A null id is delivered as "" and skips dedup until C8 verifies
-    // the updated server.
-    if (
-      message.messageId !== null &&
-      this.dedupWindow.isDuplicate(message.messageId)
-    ) {
+    // REV-01, verified against the live server in C8: every MSG carries a
+    // server-assigned id. A missing id is protocol corruption.
+    if (message.messageId === null) {
+      const handle = this.handle;
+      this.handle = undefined;
+      handle?.close();
+      this.failTerminal(
+        new ProtocolError(
+          "Server message is missing its identifier.",
+          "messageId",
+          0,
+        ),
+      );
       return;
     }
+
+    // Ids are recorded before fanout, even with no listeners.
+    if (this.dedupWindow.isDuplicate(message.messageId)) return;
 
     const listeners = this.segmentListeners.get(message.segmentId);
     if (!listeners) return;
@@ -669,7 +678,7 @@ export class Channel {
       {
         tokenReference: message.tokenReference,
         segmentId: message.segmentId,
-        messageId: message.messageId ?? "",
+        messageId: message.messageId,
         timestamp: message.timestamp,
         payload: message.payload,
       },

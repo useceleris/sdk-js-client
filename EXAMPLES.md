@@ -1,6 +1,6 @@
 # @useceleris/client — consumer examples
 
-> **Status: C4–C6 are implemented — everything below runs today.** This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples against packed artifacts.
+> Every snippet below is verified: types are checked against the public surface on every `npm run check` ([drift suite](tests/package/examples-drift.test.ts)), and the runnable variants in [examples/](examples) execute against packed artifacts and a real Celeris stack ([examples suite](tests/celeris/examples.test.ts)). This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change.
 
 Credentials are always minted by a trusted server. The browser never sees a signing secret; it fetches short-lived opaque credentials from the application's own authenticated endpoint.
 
@@ -115,14 +115,16 @@ Error handling on publish:
 try {
   await chat.publish({ payload: bytes });
 } catch (error) {
-  if (error.code === "NotConnected") {
-    /* offline: nothing was queued */
-  }
-  if (error.code === "Backpressure") {
-    /* writer full: slow down */
-  }
-  if (error.code === "DeliveryUnknown") {
-    /* interrupted mid-send: do not assume either way */
+  if (error instanceof ConnectionError) {
+    if (error.code === "NotConnected") {
+      /* offline: nothing was queued */
+    }
+    if (error.code === "Backpressure") {
+      /* writer full: slow down */
+    }
+    if (error.code === "DeliveryUnknown") {
+      /* interrupted mid-send: do not assume either way */
+    }
   }
 }
 ```
@@ -170,26 +172,45 @@ Two channels are fully independent — separate sockets, memberships, presence e
 All SDK failures carry a stable `code` — match on `code`, never on message text:
 
 ```ts
+import { ConnectionError } from "@useceleris/client";
+
 try {
   await channel.connect();
 } catch (error) {
-  switch (error.code) {
-    case "Timeout": // credential+handshake deadline (default 15 s)
-    case "Cancelled": // your AbortSignal fired
-    case "Transport": // network/handshake failure; safe fixed message
-    case "Configuration": // invalid options; fix the call site
-      break;
+  if (error instanceof ConnectionError) {
+    switch (error.code) {
+      case "Timeout": // credential+handshake deadline (default 15 s)
+      case "Cancelled": // your AbortSignal fired
+      case "Transport": // network/handshake failure; safe fixed message
+        break;
+    }
   }
+  // ConfigurationError means the call site is wrong; fix it.
 }
 
 // Permission denials arrive asynchronously through events().onError with
 // code "Permission", uncorrelated to any command — the protocol has no acks.
 channel.events().onError((error) => {
-  if (error.code === "Permission") {
+  if (error instanceof ConnectionError && error.code === "Permission") {
     /* the token lacks access to something it tried */
   }
 });
-}
+```
+
+## Replay, gaps and duplicates
+
+Reconnects request fresh credentials with a replay lookback covering the outage plus a five-second overlap, and joining a segment replays per the token's replay mode. Replayed messages carry their original server-assigned ids, and the client deduplicates within a bounded 1024-id window per channel — duplicates beyond it remain possible, which is why every `RecoveryEvent` declares `possibleGaps` and `possibleDuplicates`. There is no durable cursor: replay is bounded local recovery, not history.
+
+## Working with bigint values
+
+`Message.timestamp` and all presence metadata are `bigint` (exact signed-64 wire values). `JSON.stringify` throws on bigint — serialize them explicitly as decimal strings:
+
+```ts
+const serialized = JSON.stringify(
+  { total: page.total, timestamp: message.timestamp },
+  (key, value) => (typeof value === "bigint" ? value.toString() : value),
+);
+void serialized;
 ```
 
 ## What this API will never do

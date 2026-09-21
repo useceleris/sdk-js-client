@@ -27,9 +27,9 @@ describe("celeris authentication", () => {
       "the connect and default-subscribe greetings",
     );
 
-    expect(notices.some((entry) => entry.includes("Successfully connected"))).toBe(
-      true,
-    );
+    expect(
+      notices.some((entry) => entry.includes("Successfully connected")),
+    ).toBe(true);
     expect(notices.some((entry) => entry.includes('segment "default"'))).toBe(
       true,
     );

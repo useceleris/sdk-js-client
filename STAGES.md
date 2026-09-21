@@ -25,19 +25,22 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 ## Status
 
-| Stage                      | Status      | Owner      | Evidence                                   | Completed  | Blockers                                                         |
-| -------------------------- | ----------- | ---------- | ------------------------------------------ | ---------- | ---------------------------------------------------------------- |
-| C0 — Contracts             | Complete    | Codex      | [C0–C2 evidence](docs/verification.md)     | 2026-09-06 | Cross-repository acknowledgement pending                         |
-| C1 — Foundation            | Complete    | Codex      | [C0–C2 evidence](docs/verification.md)     | 2026-09-06 | Cross-OS/branded-browser evidence remains C8                     |
-| C2 — Codec                 | Complete    | Codex      | [Codec evidence](docs/verification.md)     | 2026-09-06 | D-002 and D-003 remain open                                      |
-| C3 — Connection            | Complete    | Codex      | [Direct C3 evidence](docs/verification.md) | 2026-09-07 | C8 Celeris/platform qualification remains                        |
-| C4 — Lifecycle + reconnect | Complete    | Claude     | [C4 evidence](docs/verification.md)        | 2026-09-20 | Eight-runtime matrix rerun remains C8; ACK-01/REV-01/DEV-01 open |
-| C5 — Segments + messaging  | Complete    | Claude     | [C5 evidence](docs/verification.md)        | 2026-09-20 | REV-01 lenient interim until C8; ACK-01/DEV-01 open              |
-| C6 — Presence              | Complete    | Claude     | [C6 evidence](docs/verification.md)        | 2026-09-20 | Restoration verification remains C7; D7 reading recorded         |
-| C7 — Recovery restoration  | Complete    | Claude     | [C7 evidence](docs/verification.md)        | 2026-09-20 | DEV-02 (Authentication unrealizable) recorded; C8 remains        |
-| C8 — Qualification         | Not started | Unassigned | —                                          | —          | Depends on C2–C7                                                 |
-| C9 — Documentation         | Not started | Unassigned | —                                          | —          | Final examples depend on C8                                      |
-| C10 — Release              | Not started | Unassigned | —                                          | —          | Depends on C8 and C9                                             |
+| Stage                      | Status                                                                                               | Owner                                                                     | Evidence                                   | Completed  | Blockers                                                         |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------ | ---------- | ---------------------------------------------------------------- |
+| C0 — Contracts             | Complete                                                                                             | Codex                                                                     | [C0–C2 evidence](docs/verification.md)     | 2026-09-06 | Cross-repository acknowledgement pending                         |
+| C1 — Foundation            | Complete                                                                                             | Codex                                                                     | [C0–C2 evidence](docs/verification.md)     | 2026-09-06 | Cross-OS/branded-browser evidence remains C8                     |
+| C2 — Codec                 | Complete                                                                                             | Codex                                                                     | [Codec evidence](docs/verification.md)     | 2026-09-06 | D-002 and D-003 remain open                                      |
+| C3 — Connection            | Complete                                                                                             | Codex                                                                     | [Direct C3 evidence](docs/verification.md) | 2026-09-07 | C8 Celeris/platform qualification remains                        |
+| C4 — Lifecycle + reconnect | Complete                                                                                             | Claude                                                                    | [C4 evidence](docs/verification.md)        | 2026-09-20 | Eight-runtime matrix rerun remains C8; ACK-01/REV-01/DEV-01 open |
+| C5 — Segments + messaging  | Complete                                                                                             | Claude                                                                    | [C5 evidence](docs/verification.md)        | 2026-09-20 | REV-01 lenient interim until C8; ACK-01/DEV-01 open              |
+| C6 — Presence              | Complete                                                                                             | Claude                                                                    | [C6 evidence](docs/verification.md)        | 2026-09-20 | Restoration verification remains C7; D7 reading recorded         |
+| C7 — Recovery restoration  | Complete                                                                                             | Claude                                                                    | [C7 evidence](docs/verification.md)        | 2026-09-20 | DEV-02 (Authentication unrealizable) recorded; C8 remains        |
+| MATRIX-01                  | Eight-runtime matrix rerun (4 Node, 2 Bun, 2 Deno via CELERIS_RUNTIME_MATRIX) not executed this pass | Default host Node/Bun/Deno plus three browser engines recorded            | Matrix rerun before stable release         |
+| STAGE-SMOKE-01             | Deployed-staging smoke evidence pending owner-supplied wss URL and credentials                       | Local three-node stack qualified; harness is env-driven and staging-ready | Staging smoke pass recorded                |
+| SLOW-01                    | Slow-consumer forced disconnect not exercised (needs sustained load beyond free-plan caps)           | Server-side lagging disconnect remains a source observation               | Load scenario or recorded waiver           |
+| C8 — Qualification         | Complete                                                                                             | Claude                                                                    | [C8 evidence](docs/verification.md)        | 2026-09-20 | MATRIX-01/STAGE-SMOKE-01/SLOW-01/PORT-01 open                    |
+| C9 — Documentation         | Complete                                                                                             | Claude                                                                    | [C9 evidence](docs/verification.md)        | 2026-09-21 | Deployed-target example run folds into STAGE-SMOKE-01            |
+| C10 — Release              | Not started                                                                                          | Unassigned                                                                | —                                          | —          | Depends on C8 and C9                                             |
 
 ## C0 — Contracts
 
@@ -158,25 +161,38 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 ## C8 — Qualification
 
+**Status:** Complete. **Owner:** Claude. **Completed:** 2026-09-20.
+
 **Dependencies:** C2–C7. **Requirements:** SDK-01–09; WIRE-01–05, AUTH-03–05, LIFE-01–04, PUB-01–04, SUB-01–04, PRES-01–03, REC-01–04, RES-01–04, LANG-01–03, SEC-02–03.
 
-- [ ] Run behavior tests on supported Node.js, Bun, Deno, Chrome/Edge, Firefox, and Safari with exact versions/revisions.
-- [ ] Test real Celeris credentials, permissions, presence, binary messaging, replay, reconnect, regional behavior, slow consumers, malformed input, and cleanup.
-- [ ] Keep local WebSocket evidence separate from Celeris acceptance; record failures instead of weakening tests.
+- [x] Qualify against a real three-node Celeris stack (celeris-realtime e2e compose, host ports remapped via a scratch override to avoid the running dev stack): real signed credentials, permissions, presence, binary messaging, replay, reconnect, and cleanup through the gated `npm run test:celeris` suites in [tests/celeris](tests/celeris). Local evidence stays separate (default vitest config excludes the directory).
+- [x] Verify REV-01 live (every delivered/replayed/cross-node message carried a server-assigned `msg_*` id) and retire the lenient null-id interim: a null id is now terminal `ProtocolError` at the delivery layer.
+- [x] Resolve the live D-002 manifestation: the server batches error frames as the final array element (`*1\n-Err\n...`); the decoder now accepts a tail-position error (boundary-unambiguous) and still rejects errors anywhere else in an array. Without this, every permission denial killed the connection.
+- [x] Observe live reconnect: node restart drove reconnecting → fresh reconnect credentials with growing capped lookback → connected with a recovery event → interests restored and cross-node delivery resumed (recorded in evidence).
+- [x] Record the credential-freshness observation: the server accepts tokens up to 60 minutes old (documented intent is 60 seconds) — D-001 evidence, not relied upon.
+- [x] Record explicit blockers for everything not run here (MATRIX-01, STAGE-SMOKE-01, SLOW-01, PORT-01) instead of weakening tests.
 
-**Acceptance:** Every applicable scenario passes or has an explicit blocker; platform and server findings remain visible.
+**Tests:** [authentication](tests/celeris/authentication.test.ts) (greetings via `onNotice`; invalid signature/unknown client/expired/future/restricted all rejected as Transport, never an authorization label; in-restriction accept; window observation), [messaging](tests/celeris/messaging.test.ts) (server-assigned ids, per-connection echo and `allow_echo`, segment demux and UNSUB effects, default auto-delivery, 100 KiB round-trip, read-only Permission denial arriving uncorrelated, write-only membership), [crossnode](tests/celeris/crossnode.test.ts) (fanout and presence consistency across nodes), [presence](tests/celeris/presence.test.ts) (raw join notices, live pagination incl. `from > to`, persistent membership after presence cancellation), [replay](tests/celeris/replay.test.ts) (identical ids on replay, dedup absorption of overlap) — 20 scenarios, all passing against the seeded stack on host Node with the default browser evidence carried by the local suites.
+
+**Acceptance:** Every applicable scenario passes or has an explicit blocker row; platform and server findings remain visible (D-001 window, D-002 tail-position revision, REV-01 verification).
+
+**Evidence / findings:** See [C8 evidence](docs/verification.md). Blockers: MATRIX-01, STAGE-SMOKE-01, SLOW-01, PORT-01 in the register below.
 
 ## C9 — Documentation
 
+**Status:** Complete. **Owner:** Claude. **Completed:** 2026-09-21.
+
 **Dependencies:** C5–C8. **Requirements:** SDK-09, SDK-11; LANG-01–03, REL-01, REL-03.
 
-- [ ] Provide packed-artifact examples using `@useceleris/client` for browsers and qualified server runtimes; promote [EXAMPLES.md](EXAMPLES.md) snippets to verified packed-artifact examples.
-- [ ] Explain credential callbacks, readiness, ownership, cancellation, binary/bigint values, notices, replay, the bounded idempotent-delivery window, gaps/duplicates beyond it, and local publish acceptance. Document bigint diagnostic serialization as decimal strings.
-- [ ] Keep browser examples free of secrets and `@useceleris/server`.
+- [x] Provide packed-artifact examples using `@useceleris/client` for browsers and qualified server runtimes: [examples/node-quickstart.ts](examples/node-quickstart.ts) and [examples/browser-quickstart.ts](examples/browser-quickstart.ts), compiled against the installed tarball and executed against the C8-qualified local stack. [EXAMPLES.md](EXAMPLES.md) snippets are type-checked against the public surface on every `npm run check`.
+- [x] Explain credential callbacks, readiness, ownership, cancellation, binary/bigint values, notices, replay, the bounded idempotent-delivery window, gaps/duplicates beyond it, and local publish acceptance — across the rewritten consumer [README](README.md) and EXAMPLES.md (new replay/gaps and bigint sections). Bigint serialization is documented as decimal strings.
+- [x] Keep browser examples free of secrets and `@useceleris/server`: the browser quickstart fetches credentials from an endpoint and imports only the client package; the test's signer endpoint lives in the Node test process.
 
-**Tests:** Every EXAMPLES.md snippet compiles and executes against packed artifacts on qualified runtimes and browsers.
+**Tests:** [examples-drift](tests/package/examples-drift.test.ts) (default run — every EXAMPLES.md `ts` block compiles strict against the public surface) and [examples](tests/celeris/examples.test.ts) (celeris config — the Node quickstart runs on host Node/Bun/Deno and the browser quickstart in Chromium/Firefox/WebKit, each asserting its success marker against the live stack).
 
-**Acceptance:** Examples run on claimed targets and describe only verified behavior. The EXAMPLES.md status banner is removed only when the API it shows is shipped and green.
+**Acceptance:** Examples run on the claimed targets and describe only verified behavior; the EXAMPLES.md status banner is replaced by a verification note. Deployed-target example runs fold into STAGE-SMOKE-01.
+
+**Evidence / findings:** See [C9 evidence](docs/verification.md). Writing the drift check surfaced two real snippet defects (a stray brace, and `catch (error)` narrowing that never compiled under strict) — both fixed, and the snippets now teach the `instanceof ConnectionError` pattern.
 
 ## C10 — Release
 
@@ -195,11 +211,11 @@ The server SDK may continue independently through S3. S4 depends on the public c
 | ID      | Finding                                                                                                                                                                                            | Development handling                                                                                             | Stable-release gate                                           |
 | ------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | D-001   | Server token freshness differs from documented intent                                                                                                                                              | Always request fresh credentials                                                                                 | Service/security resolution and evidence                      |
-| D-002   | Batched error boundaries are ambiguous                                                                                                                                                             | Preserve bounded fail-safe decoding                                                                              | Protocol disposition and conformance evidence                 |
+| D-002   | Batched error boundaries are ambiguous; C8 observed the server batching errors as the final array element, and the decoder now accepts that tail-position case (rest-of-message content)           | Reject errors anywhere else in an array; never guess boundaries                                                  | Protocol disposition for the remaining ambiguous placements   |
 | D-003   | Relayed identifiers can corrupt framing                                                                                                                                                            | Validate local identifiers; retain server concern                                                                | Service/security fix or verified resolution                   |
 | PORT-01 | Support claims exceed branded-browser/cross-OS evidence                                                                                                                                            | Keep local evidence precise                                                                                      | C8 compatibility evidence                                     |
 | ACK-01  | Request-object provider lacks server/spec acknowledgement                                                                                                                                          | C4 exports `Credentials`/`CredentialRequest`/`CredentialProvider` as the concrete artifact; coordinate before S4 | Cross-repository acknowledgement                              |
-| REV-01  | Celeris update: server always assigns MSG ids; client owns idempotent delivery (user-reported 2026-09-20; specs still say optional id, no implicit dedup)                                          | Design C5 dedup window and non-null public `messageId`; keep codec tolerant until verified                       | Spec revision + C8 verification against the updated server    |
+| REV-01  | Server always assigns MSG ids; client owns idempotent delivery. VERIFIED live in C8 (every delivered/replayed/cross-node message carried `msg_*`); strict null-id rejection shipped                | Dedup window before fanout; null id is terminal ProtocolError                                                    | Spec revision acknowledging always-present ids                |
 | DEV-01  | Handler-based events deviate from specs conventions (async iterables) and remove the consumer delivery queue (owner decision 2026-09-20)                                                           | Implement C4–C7 with named `on*` dispatch per [contracts](docs/contracts.md); writer bounds unchanged            | Spec conventions revision acknowledging handler dispatch      |
 | DEV-02  | `Authentication` category unrealizable: native WebSocket exposes no handshake status in any runtime and no authentication-named wire error exists (C7 record; `onDiagnostic` also dropped from v1) | Keep handshake failures as bounded Transport retries; `Permission` maps from known `-Err` names only             | Spec revision acknowledging the omission or a knowable source |
 

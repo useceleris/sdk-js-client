@@ -356,7 +356,7 @@ describe("delivery and dedup", () => {
     expect(redelivered).toEqual(["id-1"]);
   });
 
-  it("delivers null-id messages with an empty id and no dedup", async () => {
+  it("treats a null-id message as protocol corruption (REV-01 strict)", async () => {
     const { channel } = await establish();
     const errors: unknown[] = [];
     const delivered: string[] = [];
@@ -366,11 +366,16 @@ describe("delivery and dedup", () => {
       .onMessage((message) => delivered.push(message.messageId));
 
     sockets.at(-1)!.receive(messageFrame("chat", null, "x"));
-    sockets.at(-1)!.receive(messageFrame("chat", null, "x"));
 
-    expect(delivered).toEqual(["", ""]);
-    expect(errors).toEqual([]);
-    expect(channel.state).toBe("connected");
+    expect(delivered).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      name: "ProtocolError",
+      message: "Server message is missing its identifier.",
+    });
+    expect(channel.state).toBe("failed");
+    expect(sockets.at(-1)!.close).toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("ignores server notices and reports error frames while staying connected", async () => {
