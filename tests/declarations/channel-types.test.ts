@@ -5,7 +5,10 @@ import type {
   ChannelEventHandler,
   ChannelState,
   Message,
+  PresenceConnection,
+  PresencePage,
   RecoveryEvent,
+  ServerNotice,
   Subscription,
 } from "../../src/channel";
 import type { Segment } from "../../src/segment";
@@ -79,6 +82,44 @@ describe("channel type contracts", () => {
     }>();
   });
 
+  it("keeps the presence shapes hand-written", () => {
+    expectTypeOf<ServerNotice>().toEqualTypeOf<{
+      readonly timestamp: bigint;
+      readonly payload: Uint8Array;
+    }>();
+
+    expectTypeOf<PresenceConnection>().toEqualTypeOf<{
+      readonly tokenReference: string;
+      readonly connectionId: string;
+      readonly timestamp: bigint;
+    }>();
+
+    expectTypeOf<PresencePage>().toEqualTypeOf<{
+      readonly segmentId: string;
+      readonly total: bigint;
+      readonly perPage: bigint;
+      readonly currentPage: bigint;
+      readonly from: bigint;
+      readonly to: bigint;
+      readonly connections: readonly PresenceConnection[];
+    }>();
+
+    expectTypeOf<ReturnType<ChannelEventHandler["onNotice"]>>().toEqualTypeOf<
+      () => void
+    >();
+    expectTypeOf<
+      Segment["subscribePresence"]
+    >().returns.toEqualTypeOf<Subscription>();
+    expectTypeOf<Segment["presenceList"]>().returns.toEqualTypeOf<
+      Promise<PresencePage>
+    >();
+    expectTypeOf<Parameters<Segment["presenceList"]>[0]>().toEqualTypeOf<{
+      readonly page: number;
+      readonly perPage: number;
+      readonly signal?: AbortSignal;
+    }>();
+  });
+
   it("keeps credential and option types free of schema inference", () => {
     expectTypeOf<Credentials>().toEqualTypeOf<{
       readonly payload: string;
@@ -114,6 +155,8 @@ describe("channel type contracts", () => {
 function verifyReadonly(
   event: RecoveryEvent,
   message: Message,
+  page: PresencePage,
+  notice: ServerNotice,
   error: ChannelError,
 ): void {
   // @ts-expect-error retryIndex is readonly
@@ -124,5 +167,9 @@ function verifyReadonly(
   message.messageId = "changed";
   // @ts-expect-error payload is readonly
   message.payload = new Uint8Array();
+  // @ts-expect-error total is readonly
+  page.total = 0n;
+  // @ts-expect-error timestamp is readonly
+  notice.timestamp = 0n;
   void error;
 } // end function verifyReadonly

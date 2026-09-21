@@ -5,6 +5,9 @@ export {
   type ChannelState,
   type ChannelEventHandler,
   type Message,
+  type ServerNotice,
+  type PresencePage,
+  type PresenceConnection,
   type Subscription,
   type RecoveryEvent,
 } from "./channel";

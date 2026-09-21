@@ -1,4 +1,4 @@
-import type { Message, Subscription } from "./channel";
+import type { Message, PresencePage, Subscription } from "./channel";
 
 export type SegmentDelegates = {
   addMessageListener(
@@ -6,6 +6,7 @@ export type SegmentDelegates = {
     listener: (message: Message) => void,
   ): () => void;
   addMessageInterest(segmentId: string): Subscription;
+  addPresenceInterest(segmentId: string): Subscription;
   publishToSegment(
     segmentId: string,
     options: {
@@ -14,6 +15,14 @@ export type SegmentDelegates = {
       readonly signal?: AbortSignal;
     },
   ): Promise<void>;
+  queryPresence(
+    segmentId: string,
+    options: {
+      readonly page: number;
+      readonly perPage: number;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<PresencePage>;
 };
 
 export class Segment {
@@ -40,4 +49,16 @@ export class Segment {
   }): Promise<void> {
     return this.delegates.publishToSegment(this.segmentId, options);
   } // end method publish
+
+  subscribePresence(): Subscription {
+    return this.delegates.addPresenceInterest(this.segmentId);
+  } // end method subscribePresence
+
+  presenceList(options: {
+    readonly page: number;
+    readonly perPage: number;
+    readonly signal?: AbortSignal;
+  }): Promise<PresencePage> {
+    return this.delegates.queryPresence(this.segmentId, options);
+  } // end method presenceList
 } // end class Segment

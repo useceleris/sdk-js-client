@@ -25,6 +25,7 @@ export class Client {
   private readonly baseUrl: string;
   private readonly allowInsecureLoopback: boolean;
   private readonly connectTimeoutMs: number;
+  private readonly presenceQueryTimeoutMs: number;
   private readonly credentialProvider: CredentialProvider;
 
   constructor(options: ClientOptions) {
@@ -41,6 +42,7 @@ export class Client {
     this.baseUrl = parsed.data.baseUrl;
     this.allowInsecureLoopback = parsed.data.allowInsecureLoopback;
     this.connectTimeoutMs = parsed.data.connectTimeoutMs;
+    this.presenceQueryTimeoutMs = parsed.data.presenceQueryTimeoutMs;
     this.credentialProvider = options.credentialProvider;
   } // end constructor
 
@@ -55,6 +57,7 @@ export class Client {
       channelReference: parsed.data,
       allowInsecureLoopback: this.allowInsecureLoopback,
       connectTimeoutMs: this.connectTimeoutMs,
+      presenceQueryTimeoutMs: this.presenceQueryTimeoutMs,
       credentialProvider: this.credentialProvider,
       clock: monotonicNow,
       wallClock: Date.now,

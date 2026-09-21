@@ -27,6 +27,7 @@ export function createTestChannel(overrides: Partial<ChannelInternals> = {}) {
     channelReference: "room-1",
     allowInsecureLoopback: false,
     connectTimeoutMs: 15_000,
+    presenceQueryTimeoutMs: 10_000,
     credentialProvider,
     clock: () => clocks.monotonic,
     wallClock: () => clocks.wall,

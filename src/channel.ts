@@ -29,6 +29,27 @@ export type Message = {
   readonly payload: Uint8Array;
 };
 
+export type ServerNotice = {
+  readonly timestamp: bigint;
+  readonly payload: Uint8Array;
+};
+
+export type PresenceConnection = {
+  readonly tokenReference: string;
+  readonly connectionId: string;
+  readonly timestamp: bigint;
+};
+
+export type PresencePage = {
+  readonly segmentId: string;
+  readonly total: bigint;
+  readonly perPage: bigint;
+  readonly currentPage: bigint;
+  readonly from: bigint; // from > to possible; raw metadata preserved
+  readonly to: bigint;
+  readonly connections: readonly PresenceConnection[];
+};
+
 export type ChannelState =
   | "idle"
   | "connecting"
@@ -51,6 +72,7 @@ export interface Subscription {
 export interface ChannelEventHandler {
   onStateChange(listener: (state: ChannelState) => void): () => void;
   onRecovery(listener: (event: RecoveryEvent) => void): () => void;
+  onNotice(listener: (notice: ServerNotice) => void): () => void;
   onError(listener: (error: ChannelError) => void): () => void;
 }
 
@@ -59,6 +81,7 @@ export type ChannelInternals = {
   readonly channelReference: string;
   readonly allowInsecureLoopback: boolean;
   readonly connectTimeoutMs: number;
+  readonly presenceQueryTimeoutMs: number;
   readonly credentialProvider: CredentialProvider;
   readonly clock: () => number;
   readonly wallClock: () => number;
@@ -138,22 +161,38 @@ export class Channel {
   private readonly dedupWindow = new DedupWindow();
   private readonly segmentListeners = new Map<string, ListenerSet<Message>>();
   private readonly messageInterests = new Map<string, number>();
+  private readonly presenceInterests = new Map<string, number>();
+  private pendingPresenceQuery:
+    | {
+        readonly segmentId: string;
+        readonly page: number;
+        readonly perPage: number;
+        readonly resolve: (page: PresencePage) => void;
+        readonly reject: (error: ChannelError) => void;
+        readonly cleanup: () => void;
+      }
+    | undefined;
 
   private readonly connectionHandler = new ConnectionHandler();
   private readonly stateListeners = new ListenerSet<ChannelState>();
   private readonly recoveryListeners = new ListenerSet<RecoveryEvent>();
   private readonly errorListeners = new ListenerSet<ChannelError>();
+  private readonly noticeListeners = new ListenerSet<ServerNotice>();
   private readonly handler: ChannelEventHandler = {
     onStateChange: (listener) => this.stateListeners.add(listener),
     onRecovery: (listener) => this.recoveryListeners.add(listener),
+    onNotice: (listener) => this.noticeListeners.add(listener),
     onError: (listener) => this.errorListeners.add(listener),
   };
   private readonly segmentDelegates: SegmentDelegates = {
     addMessageListener: (segmentId, listener) =>
       this.addMessageListener(segmentId, listener),
     addMessageInterest: (segmentId) => this.addMessageInterest(segmentId),
+    addPresenceInterest: (segmentId) => this.addPresenceInterest(segmentId),
     publishToSegment: (segmentId, options) =>
       this.publishToSegment(segmentId, options),
+    queryPresence: (segmentId, options) =>
+      this.queryPresence(segmentId, options),
   };
 
   constructor(private readonly internals: ChannelInternals) {}
@@ -217,6 +256,9 @@ export class Channel {
       this.resolveClose = resolve;
     });
 
+    this.rejectPendingPresenceQuery(
+      new ConnectionError("Cancelled", "Channel closed."),
+    );
     this.generation += 1;
     this.clearRetryTimer();
     this.attemptController?.abort();
@@ -293,7 +335,7 @@ export class Channel {
       this.outage = undefined;
 
       try {
-        this.flushMessageInterests();
+        this.flushInterests();
       } catch (error) {
         this.handle = undefined;
         handle.close();
@@ -347,13 +389,130 @@ export class Channel {
         this.messageInterests.delete(segmentId);
         if (
           this.currentState === "connected" &&
-          !defaultSegments.has(segmentId)
+          !defaultSegments.has(segmentId) &&
+          !this.presenceInterests.has(segmentId)
         ) {
           this.sendInterestCommand({ command: "UNSUB", segmentId });
         }
       },
     };
   } // end method addMessageInterest
+
+  // Unlike message SUB/UNSUB, presence commands apply to every segment
+  // including the default one: the server's connect-time auto-join grants
+  // message membership only, never a presence subscription.
+  private addPresenceInterest(segmentId: string): Subscription {
+    if (this.currentState === "closing" || this.currentState === "closed")
+      throw new ConnectionError("NotConnected", "Channel is closed.");
+
+    const count = (this.presenceInterests.get(segmentId) ?? 0) + 1;
+    this.presenceInterests.set(segmentId, count);
+    if (count === 1 && this.currentState === "connected") {
+      this.sendInterestCommand({ command: "PRES_SUB", segmentId });
+    }
+
+    let cancelled = false;
+    return {
+      cancel: () => {
+        if (cancelled) return;
+        cancelled = true;
+
+        const remaining = (this.presenceInterests.get(segmentId) ?? 1) - 1;
+        if (remaining > 0) {
+          this.presenceInterests.set(segmentId, remaining);
+          return;
+        }
+        this.presenceInterests.delete(segmentId);
+        if (this.currentState === "connected") {
+          this.sendInterestCommand({ command: "PRES_UNSUB", segmentId });
+        }
+      },
+    };
+  } // end method addPresenceInterest
+
+  private async queryPresence(
+    segmentId: string,
+    options: {
+      readonly page: number;
+      readonly perPage: number;
+      readonly signal?: AbortSignal;
+    },
+  ): Promise<PresencePage> {
+    if (this.currentState !== "connected" || !this.handle)
+      throw new ConnectionError("NotConnected", "Channel is not connected.");
+    if (this.pendingPresenceQuery)
+      throw new ConnectionError(
+        "OperationInProgress",
+        "A presence query is already in flight.",
+      );
+    if (options?.signal?.aborted)
+      throw new ConnectionError("Cancelled", "Presence query cancelled.");
+
+    const bytes = encodeClientCommand({
+      command: "PRES_LIST",
+      segmentId,
+      page: options.page,
+      perPage: options.perPage,
+    });
+    // A synchronous send failure rejects without ever taking the query slot.
+    this.sendCommand(bytes);
+
+    return await new Promise<PresencePage>((resolve, reject) => {
+      const timer = setTimeout(
+        () =>
+          this.retirePendingPresenceQuery(
+            new ConnectionError("Timeout", "Presence query timed out."),
+          ),
+        this.internals.presenceQueryTimeoutMs,
+      );
+      const abort = (): void =>
+        this.retirePendingPresenceQuery(
+          new ConnectionError("Cancelled", "Presence query cancelled."),
+        );
+      options.signal?.addEventListener("abort", abort, { once: true });
+
+      this.pendingPresenceQuery = {
+        segmentId,
+        page: options.page,
+        perPage: options.perPage,
+        resolve,
+        reject,
+        cleanup: () => {
+          clearTimeout(timer);
+          options.signal?.removeEventListener("abort", abort);
+        },
+      };
+    });
+  } // end method queryPresence
+
+  private takePendingPresenceQuery():
+    NonNullable<typeof this.pendingPresenceQuery> | undefined {
+    const pending = this.pendingPresenceQuery;
+    if (!pending) return undefined;
+
+    this.pendingPresenceQuery = undefined;
+    pending.cleanup();
+    return pending;
+  } // end method takePendingPresenceQuery
+
+  private rejectPendingPresenceQuery(error: ChannelError): void {
+    this.takePendingPresenceQuery()?.reject(error);
+  } // end method rejectPendingPresenceQuery
+
+  // A query that was already submitted cannot be retried or correlated:
+  // reject it and retire the connection into bounded recovery.
+  private retirePendingPresenceQuery(error: ChannelError): void {
+    const pending = this.takePendingPresenceQuery();
+    if (!pending) return;
+
+    pending.reject(error);
+    const handle = this.handle;
+    this.handle = undefined;
+    // Enter reconnecting before closing so the (possibly synchronous)
+    // native close event is dropped by the state gate.
+    this.enterReconnecting();
+    handle?.close();
+  } // end method retirePendingPresenceQuery
 
   private async publishToSegment(
     segmentId: string,
@@ -395,7 +554,7 @@ export class Channel {
   // Runtime interest writes cannot leave stale remote interest silently
   // active: a failed SUB/UNSUB invalidates the socket and fails the channel.
   private sendInterestCommand(command: {
-    command: "SUB" | "UNSUB";
+    command: "SUB" | "UNSUB" | "PRES_SUB" | "PRES_UNSUB";
     segmentId: string;
   }): void {
     try {
@@ -412,13 +571,16 @@ export class Channel {
     }
   } // end method sendInterestCommand
 
-  private flushMessageInterests(): void {
+  private flushInterests(): void {
     for (const segmentId of this.messageInterests.keys()) {
       if (defaultSegments.has(segmentId)) continue;
 
       this.sendCommand(encodeClientCommand({ command: "SUB", segmentId }));
     }
-  } // end method flushMessageInterests
+    for (const segmentId of this.presenceInterests.keys()) {
+      this.sendCommand(encodeClientCommand({ command: "PRES_SUB", segmentId }));
+    }
+  } // end method flushInterests
 
   private routeMessage(
     attemptGeneration: number,
@@ -441,11 +603,46 @@ export class Channel {
           new ConnectionError("Transport", "Server reported an error."),
         );
         return;
+      case "SERVER_MSG":
+        this.noticeListeners.dispatch(
+          { timestamp: message.timestamp, payload: message.payload },
+          () => this.reportListenerFailure(),
+        );
+        return;
+      case "PRES_LIST_RESPONSE":
+        this.receivePresenceResponse(message);
+        return;
       default:
-        // SERVER_MSG and PRES_LIST_RESPONSE stay silent until C6.
         return;
     }
   } // end method routeMessage
+
+  private receivePresenceResponse(
+    response: Extract<ServerMessage, { command: "PRES_LIST_RESPONSE" }>,
+  ): void {
+    const pending = this.pendingPresenceQuery;
+    // Non-matching and unsolicited responses are unsolicited protocol
+    // events; a pending query keeps waiting for its match.
+    if (
+      !pending ||
+      response.segmentId !== pending.segmentId ||
+      response.currentPage !== BigInt(pending.page) ||
+      response.perPage !== BigInt(pending.perPage)
+    ) {
+      return;
+    }
+
+    this.takePendingPresenceQuery();
+    pending.resolve({
+      segmentId: response.segmentId,
+      total: response.total,
+      perPage: response.perPage,
+      currentPage: response.currentPage,
+      from: response.from,
+      to: response.to,
+      connections: response.connections,
+    });
+  } // end method receivePresenceResponse
 
   private deliverMessage(
     message: Extract<ServerMessage, { command: "MSG" }>,
@@ -504,6 +701,12 @@ export class Channel {
   } // end method receiveSocketError
 
   private enterReconnecting(): void {
+    this.rejectPendingPresenceQuery(
+      new ConnectionError(
+        "Transport",
+        "Connection lost during presence query.",
+      ),
+    );
     const now = this.internals.clock();
     if (now - this.connectedAtMonotonic >= retryBudgetResetMs)
       this.retriesUsed = 0;
@@ -584,6 +787,12 @@ export class Channel {
   } // end method runReconnectAttempt
 
   private failTerminal(error: ChannelError): void {
+    this.rejectPendingPresenceQuery(
+      new ConnectionError(
+        "Transport",
+        "Connection lost during presence query.",
+      ),
+    );
     this.generation += 1;
     this.clearRetryTimer();
     this.emitError(error);

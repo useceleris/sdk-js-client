@@ -1,6 +1,6 @@
 # @useceleris/client — consumer examples
 
-> **Status: C4–C5 are implemented — Setup, Connect, Segments (subscribe/publish) and Error handling below run today.** Presence (C6) is target API and does not run yet. This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples.
+> **Status: C4–C6 are implemented — everything below runs today.** This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change. C9 promotes these snippets to verified packed-artifact examples against packed artifacts.
 
 Credentials are always minted by a trusted server. The browser never sees a signing secret; it fetches short-lived opaque credentials from the application's own authenticated endpoint.
 
@@ -129,7 +129,7 @@ try {
 
 A permission-denied publish is different: it **resolves locally**, then the server's error frame arrives later through `events().onError` with no correlation to the call — the protocol has no acks.
 
-## Presence (target API — C6)
+## Presence
 
 ```ts
 const chat = channel.segment("chat");

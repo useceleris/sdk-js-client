@@ -1,6 +1,6 @@
 # Test inventory
 
-This inventory covers the implemented C0–C5 package, including the reconnect scheduler and segment messaging. Update it when tested behavior changes. Fixtures contain independent expected bytes and objects; runtime tests compare observations from the real codec with those expectations.
+This inventory covers the implemented C0–C6 package, including the reconnect scheduler, segment messaging and presence. Update it when tested behavior changes. Fixtures contain independent expected bytes and objects; runtime tests compare observations from the real codec with those expectations.
 
 ## Command encoding
 
@@ -51,7 +51,7 @@ See [runtime support](runtime-support.md) for matrix configuration and [verifica
 
 `npm run check` runs build, typecheck, formatting and tests. `npm run test` runs once; `npm run test:watch` watches. Supply the documented eight-runtime matrix for full qualification.
 
-Presence interests and query orchestration are future C6 work; interest restoration verification across reconnect is C7. These tests do not prove server acceptance or resolve D-001–D-003. Runtime primitives and build-tool behavior are setup, not independent test subjects.
+Interest restoration verification across reconnect (with the dedup window) is C7. These tests do not prove server acceptance or resolve D-001–D-003. Runtime primitives and build-tool behavior are setup, not independent test subjects.
 
 ## C3 credentials and transport
 
@@ -71,4 +71,8 @@ Internal bundles exercise transport implementation separately from installed pac
 
 ## C5 segments and messaging
 
-The [messaging suite](../tests/channel/messaging.test.ts) drives `Channel.segment()` proxies with the shared WebSocket double, hand-authored MSG/ARRAY/ERROR/SERVER_MSG frames and golden outbound bytes. It covers proxy statelessness and eager identifier validation, shared interest counts across handler instances, default-segment rules (no SUB/UNSUB ever sent), publish acceptance semantics with `NotConnected`/`Cancelled`/`ConfigurationError`/`Backpressure`/`DeliveryUnknown` boundaries, the 64-command observed-drain heuristic, connect-time and reconnect-time SUB flushes with the initial-versus-reconnect failure split, segment-exact fan-out, the 1024-id dedup window (record-before-fanout, eviction, reconnect persistence, connect reset), the lenient null-id interim, error-frame reporting while remaining connected, listener containment and mid-dispatch disposal, and nested ARRAY ordering. [Channel type contracts](../tests/declarations/channel-types.test.ts) pin `Message` and the `Segment` signatures. These tests do not prove server acceptance, presence behavior (C6) or restoration verification (C7).
+The [messaging suite](../tests/channel/messaging.test.ts) drives `Channel.segment()` proxies with the shared WebSocket double, hand-authored MSG/ARRAY/ERROR/SERVER_MSG frames and golden outbound bytes. It covers proxy statelessness and eager identifier validation, shared interest counts across handler instances, default-segment rules (no SUB/UNSUB ever sent), publish acceptance semantics with `NotConnected`/`Cancelled`/`ConfigurationError`/`Backpressure`/`DeliveryUnknown` boundaries, the 64-command observed-drain heuristic, connect-time and reconnect-time SUB flushes with the initial-versus-reconnect failure split, segment-exact fan-out, the 1024-id dedup window (record-before-fanout, eviction, reconnect persistence, connect reset), the lenient null-id interim, error-frame reporting while remaining connected, listener containment and mid-dispatch disposal, and nested ARRAY ordering. [Channel type contracts](../tests/declarations/channel-types.test.ts) pin `Message` and the `Segment` signatures. These tests do not prove server acceptance or restoration verification (C7).
+
+## C6 presence
+
+The [presence suite](../tests/channel/presence.test.ts) covers presence interests and page queries with golden PRES_SUB/PRES_UNSUB/PRES_LIST bytes and hand-authored PRES_LIST_RESPONSE frames. It verifies shared ref-counts across handler instances, uniform presence commands on the default segment (deliberate contrast with message SUB/UNSUB), the tightened both-counts-zero UNSUB rule in both cancellation orders, messages-then-presence flush ordering on connect and reconnect, interest-write failure invalidation, the single per-channel query slot (overlap rejection, slot release on every settle path), bounds rejection without clamping, timeout and abort-after-send retirement into bounded recovery with subsequent re-query, unsolicited/mismatched/late response handling, query rejection on loss/close/terminal failure, publish-like send-failure semantics, raw `from > to` metadata pass-through, and `onNotice` raw delivery with disposal and containment. These tests do not prove server acceptance or restoration verification (C7).

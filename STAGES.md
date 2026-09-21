@@ -33,7 +33,7 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 | C3 — Connection            | Complete    | Codex      | [Direct C3 evidence](docs/verification.md) | 2026-09-07 | C8 Celeris/platform qualification remains                        |
 | C4 — Lifecycle + reconnect | Complete    | Claude     | [C4 evidence](docs/verification.md)        | 2026-09-20 | Eight-runtime matrix rerun remains C8; ACK-01/REV-01/DEV-01 open |
 | C5 — Segments + messaging  | Complete    | Claude     | [C5 evidence](docs/verification.md)        | 2026-09-20 | REV-01 lenient interim until C8; ACK-01/DEV-01 open              |
-| C6 — Presence              | Not started | Unassigned | —                                          | —          | Depends on C4 and C5                                             |
+| C6 — Presence              | Complete    | Claude     | [C6 evidence](docs/verification.md)        | 2026-09-20 | Restoration verification remains C7; D7 reading recorded         |
 | C7 — Recovery restoration  | Not started | Unassigned | —                                          | —          | Depends on C4–C6                                                 |
 | C8 — Qualification         | Not started | Unassigned | —                                          | —          | Depends on C2–C7                                                 |
 | C9 — Documentation         | Not started | Unassigned | —                                          | —          | Final examples depend on C8                                      |
@@ -125,15 +125,19 @@ Status values: **Not started**, **In progress**, **Blocked**, **Complete**. Comp
 
 ## C6 — Presence
 
+**Status:** Complete. **Owner:** Claude. **Completed:** 2026-09-20.
+
 **Dependencies:** C4 and C5. **Requirements:** SDK-05–06; SUB-02–03, PRES-01–03.
 
-- [ ] Implement `Segment.subscribePresence()` returning `Subscription` (PRES_SUB; presence interest ref-counted channel-wide per segment; document that the server force-joins the segment for messages and that PRES_UNSUB does not leave it — presence is a facet of a joined segment, per SEG-01), and add `onNotice` to `ChannelEventHandler` (raw SERVER_MSG bytes including presence prose and sub/unsub acks — untagged on the wire, channel-level only, never parsed into typed events).
-- [ ] Implement `Segment.presenceList(options)` returning `PresencePage`/`PresenceConnection` — serialized to one in-flight query per CHANNEL with validated response metadata and the configurable `presenceQueryTimeoutMs` (default 10 000).
-- [ ] Release a query cancelled before send; retire the connection after cancellation/timeout following send.
+- [x] Implement `Segment.subscribePresence()` returning `Subscription` (PRES_SUB; presence interest ref-counted channel-wide per segment; document that the server force-joins the segment for messages and that PRES_UNSUB does not leave it — presence is a facet of a joined segment, per SEG-01), and add `onNotice` to `ChannelEventHandler` (raw SERVER_MSG bytes including presence prose and sub/unsub acks — untagged on the wire, channel-level only, never parsed into typed events).
+- [x] Implement `Segment.presenceList(options)` returning `PresencePage`/`PresenceConnection` — serialized to one in-flight query per CHANNEL with validated response metadata and the configurable `presenceQueryTimeoutMs` (default 10 000).
+- [x] Release a query cancelled before send; retire the connection after cancellation/timeout following send.
 
 **Tests:** Presence interest counting per segment across handler instances and PRES_SUB/PRES_UNSUB emission; PRES_UNSUB emitted on last presence cancellation while message membership considerations stay per SEG-01; overlapping `presenceList` on ANY segment of one channel → `OperationInProgress`; `presenceQueryTimeoutMs` honored with 10 000 default; cancellation before send releases the slot while cancellation/timeout after send retires the connection; `page`/`perPage` bounds rejected, never clamped; out-of-range pages surface raw metadata with `from > to` and empty connections; unsolicited and late responses treated as protocol events; `onNotice` delivers raw bytes untyped with dispose-function removal; multiple connections per identity.
 
-**Acceptance:** Presence exports match the contracts surface; exactly one in-flight query per channel is enforced; no typed join/leave event or subscription receipt exists anywhere in the API and nothing gates on prose; response arithmetic is validated against signed-64 overflow. Full recovery behavior remains C7/C8.
+**Acceptance:** Presence exports match the contracts surface; exactly one in-flight query per channel is enforced; no typed join/leave event or subscription receipt exists anywhere in the API and nothing gates on prose; the signed-64 requirement is satisfied by construction — no response arithmetic exists (bigint equality matching, raw metadata pass-through; decoder bounds all numerics). Full recovery behavior remains C7/C8.
+
+**Evidence / findings:** Implemented 2026-09-20; see [C6 evidence](docs/verification.md). Full `npm run check` passed with the default Node/Bun/Deno matrix plus Chromium/Firefox/WebKit; the eight-runtime rerun remains C8.
 
 ## C7 — Recovery restoration
 
