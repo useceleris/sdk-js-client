@@ -1,9 +1,9 @@
 import { identifierSchema } from "./commands";
-import { ConnectionHandle, ConnectionHandler } from "./connection";
+import { openConnection, type ConnectionHandle } from "./connection";
 import type { CredentialProvider } from "./credential-types";
 import { encodeClientCommand } from "./encode";
 import { ConfigurationError, ConnectionError, ProtocolError } from "./errors";
-import type { ServerMessage } from "./messages";
+import type { PresenceConnection, ServerMessage } from "./messages";
 import {
   closeBudgetMs,
   computeReplayLookbackMs,
@@ -14,8 +14,6 @@ import {
 import { Segment, type SegmentDelegates } from "./segment";
 
 const defaultSegmentId = "default";
-// The server's DEFAULT_SEGMENTS is a list; membership stays a set test.
-const defaultSegments: ReadonlySet<string> = new Set([defaultSegmentId]);
 const dedupWindowSize = 1024;
 const maximumPendingCommands = 64;
 
@@ -34,11 +32,7 @@ export type ServerNotice = {
   readonly payload: Uint8Array;
 };
 
-export type PresenceConnection = {
-  readonly tokenReference: string;
-  readonly connectionId: string;
-  readonly timestamp: bigint;
-};
+export type { PresenceConnection } from "./messages";
 
 export type PresencePage = {
   readonly segmentId: string;
@@ -99,6 +93,8 @@ type RecoveryContext =
 class ListenerSet<T> {
   private readonly entries: { callback: (value: T) => void }[] = [];
 
+  constructor(private readonly containFailure: () => void) {}
+
   add(callback: (value: T) => void): () => void {
     const entry = { callback };
     this.entries.push(entry);
@@ -109,14 +105,14 @@ class ListenerSet<T> {
     };
   } // end method add
 
-  dispatch(value: T, containFailure: () => void): void {
+  dispatch(value: T): void {
     for (const entry of this.entries.slice()) {
       if (!this.entries.includes(entry)) continue;
 
       try {
         entry.callback(value);
       } catch {
-        containFailure();
+        this.containFailure();
       }
     }
   } // end method dispatch
@@ -173,11 +169,20 @@ export class Channel {
       }
     | undefined;
 
-  private readonly connectionHandler = new ConnectionHandler();
-  private readonly stateListeners = new ListenerSet<ChannelState>();
-  private readonly recoveryListeners = new ListenerSet<RecoveryEvent>();
-  private readonly errorListeners = new ListenerSet<ChannelError>();
-  private readonly noticeListeners = new ListenerSet<ServerNotice>();
+  private readonly stateListeners = new ListenerSet<ChannelState>(() =>
+    this.reportListenerFailure(),
+  );
+  private readonly recoveryListeners = new ListenerSet<RecoveryEvent>(() =>
+    this.reportListenerFailure(),
+  );
+  // Error-listener exceptions are swallowed: reporting them would re-enter
+  // error dispatch (emitError also guards against that re-entry).
+  private readonly errorListeners = new ListenerSet<ChannelError>(
+    () => undefined,
+  );
+  private readonly noticeListeners = new ListenerSet<ServerNotice>(() =>
+    this.reportListenerFailure(),
+  );
   private readonly handler: ChannelEventHandler = {
     onStateChange: (listener) => this.stateListeners.add(listener),
     onRecovery: (listener) => this.recoveryListeners.add(listener),
@@ -264,8 +269,7 @@ export class Channel {
     this.attemptController?.abort();
     this.attemptController = undefined;
 
-    const handle = this.handle;
-    this.handle = undefined;
+    const handle = this.detachHandle();
     this.setState("closing");
 
     if (handle) {
@@ -295,6 +299,14 @@ export class Channel {
     this.resolveClose?.();
   } // end method finishClose
 
+  // Detach the socket reference before acting on it so no event delivered
+  // during the follow-up can re-enter through a stale handle.
+  private detachHandle(): ConnectionHandle | undefined {
+    const handle = this.handle;
+    this.handle = undefined;
+    return handle;
+  } // end method detachHandle
+
   private async attempt(
     recovery: RecoveryContext,
     callerSignal?: AbortSignal,
@@ -307,7 +319,7 @@ export class Channel {
     if (callerSignal?.aborted) controller.abort();
 
     try {
-      const handle = await this.connectionHandler.openConnection(
+      const handle = await openConnection(
         {
           baseUrl: this.internals.baseUrl,
           channelReference: this.internals.channelReference,
@@ -354,7 +366,7 @@ export class Channel {
   ): () => void {
     let listeners = this.segmentListeners.get(segmentId);
     if (!listeners) {
-      listeners = new ListenerSet<Message>();
+      listeners = new ListenerSet<Message>(() => this.reportListenerFailure());
       this.segmentListeners.set(segmentId, listeners);
     }
 
@@ -362,54 +374,49 @@ export class Channel {
   } // end method addMessageListener
 
   private addMessageInterest(segmentId: string): Subscription {
-    if (this.currentState === "closing" || this.currentState === "closed")
-      throw new ConnectionError("NotConnected", "Channel is closed.");
-
-    const count = (this.messageInterests.get(segmentId) ?? 0) + 1;
-    this.messageInterests.set(segmentId, count);
-    if (
-      count === 1 &&
-      this.currentState === "connected" &&
-      !defaultSegments.has(segmentId)
-    ) {
-      this.sendInterestCommand({ command: "SUB", segmentId });
-    }
-
-    let cancelled = false;
-    return {
-      cancel: () => {
-        if (cancelled) return;
-        cancelled = true;
-
-        const remaining = (this.messageInterests.get(segmentId) ?? 1) - 1;
-        if (remaining > 0) {
-          this.messageInterests.set(segmentId, remaining);
-          return;
-        }
-        this.messageInterests.delete(segmentId);
-        if (
-          this.currentState === "connected" &&
-          !defaultSegments.has(segmentId) &&
-          !this.presenceInterests.has(segmentId)
-        ) {
-          this.sendInterestCommand({ command: "UNSUB", segmentId });
-        }
+    return this.addInterest(
+      this.messageInterests,
+      segmentId,
+      () => {
+        if (segmentId !== defaultSegmentId)
+          this.sendInterestCommand({ command: "SUB", segmentId });
       },
-    };
+      () => {
+        if (
+          segmentId !== defaultSegmentId &&
+          !this.presenceInterests.has(segmentId)
+        )
+          this.sendInterestCommand({ command: "UNSUB", segmentId });
+      },
+    );
   } // end method addMessageInterest
 
   // Unlike message SUB/UNSUB, presence commands apply to every segment
   // including the default one: the server's connect-time auto-join grants
   // message membership only, never a presence subscription.
   private addPresenceInterest(segmentId: string): Subscription {
+    return this.addInterest(
+      this.presenceInterests,
+      segmentId,
+      () => this.sendInterestCommand({ command: "PRES_SUB", segmentId }),
+      () => this.sendInterestCommand({ command: "PRES_UNSUB", segmentId }),
+    );
+  } // end method addPresenceInterest
+
+  // Ref-counts one interest map entry; the callbacks run only while
+  // connected, on the first registration and on the last cancellation.
+  private addInterest(
+    interests: Map<string, number>,
+    segmentId: string,
+    sendSubscribe: () => void,
+    sendUnsubscribe: () => void,
+  ): Subscription {
     if (this.currentState === "closing" || this.currentState === "closed")
       throw new ConnectionError("NotConnected", "Channel is closed.");
 
-    const count = (this.presenceInterests.get(segmentId) ?? 0) + 1;
-    this.presenceInterests.set(segmentId, count);
-    if (count === 1 && this.currentState === "connected") {
-      this.sendInterestCommand({ command: "PRES_SUB", segmentId });
-    }
+    const count = (interests.get(segmentId) ?? 0) + 1;
+    interests.set(segmentId, count);
+    if (count === 1 && this.currentState === "connected") sendSubscribe();
 
     let cancelled = false;
     return {
@@ -417,18 +424,16 @@ export class Channel {
         if (cancelled) return;
         cancelled = true;
 
-        const remaining = (this.presenceInterests.get(segmentId) ?? 1) - 1;
+        const remaining = (interests.get(segmentId) ?? 1) - 1;
         if (remaining > 0) {
-          this.presenceInterests.set(segmentId, remaining);
+          interests.set(segmentId, remaining);
           return;
         }
-        this.presenceInterests.delete(segmentId);
-        if (this.currentState === "connected") {
-          this.sendInterestCommand({ command: "PRES_UNSUB", segmentId });
-        }
+        interests.delete(segmentId);
+        if (this.currentState === "connected") sendUnsubscribe();
       },
     };
-  } // end method addPresenceInterest
+  } // end method addInterest
 
   private async queryPresence(
     segmentId: string,
@@ -499,6 +504,15 @@ export class Channel {
     this.takePendingPresenceQuery()?.reject(error);
   } // end method rejectPendingPresenceQuery
 
+  private rejectPresenceQueryOnConnectionLoss(): void {
+    this.rejectPendingPresenceQuery(
+      new ConnectionError(
+        "Transport",
+        "Connection lost during presence query.",
+      ),
+    );
+  } // end method rejectPresenceQueryOnConnectionLoss
+
   // A query that was already submitted cannot be retried or correlated:
   // reject it and retire the connection into bounded recovery.
   private retirePendingPresenceQuery(error: ChannelError): void {
@@ -506,8 +520,7 @@ export class Channel {
     if (!pending) return;
 
     pending.reject(error);
-    const handle = this.handle;
-    this.handle = undefined;
+    const handle = this.detachHandle();
     // Enter reconnecting before closing so the (possibly synchronous)
     // native close event is dropped by the state gate.
     this.enterReconnecting();
@@ -560,9 +573,7 @@ export class Channel {
     try {
       this.sendCommand(encodeClientCommand(command));
     } catch (error) {
-      const handle = this.handle;
-      this.handle = undefined;
-      handle?.close();
+      this.detachHandle()?.close();
       this.failTerminal(
         error instanceof ConfigurationError || error instanceof ConnectionError
           ? error
@@ -573,7 +584,7 @@ export class Channel {
 
   private flushInterests(): void {
     for (const segmentId of this.messageInterests.keys()) {
-      if (defaultSegments.has(segmentId)) continue;
+      if (segmentId === defaultSegmentId) continue;
 
       this.sendCommand(encodeClientCommand({ command: "SUB", segmentId }));
     }
@@ -609,10 +620,10 @@ export class Channel {
         );
         return;
       case "SERVER_MSG":
-        this.noticeListeners.dispatch(
-          { timestamp: message.timestamp, payload: message.payload },
-          () => this.reportListenerFailure(),
-        );
+        this.noticeListeners.dispatch({
+          timestamp: message.timestamp,
+          payload: message.payload,
+        });
         return;
       case "PRES_LIST_RESPONSE":
         this.receivePresenceResponse(message);
@@ -655,9 +666,7 @@ export class Channel {
     // REV-01, verified against the live server in C8: every MSG carries a
     // server-assigned id. A missing id is protocol corruption.
     if (message.messageId === null) {
-      const handle = this.handle;
-      this.handle = undefined;
-      handle?.close();
+      this.detachHandle()?.close();
       this.failTerminal(
         new ProtocolError(
           "Server message is missing its identifier.",
@@ -674,16 +683,13 @@ export class Channel {
     const listeners = this.segmentListeners.get(message.segmentId);
     if (!listeners) return;
 
-    listeners.dispatch(
-      {
-        tokenReference: message.tokenReference,
-        segmentId: message.segmentId,
-        messageId: message.messageId,
-        timestamp: message.timestamp,
-        payload: message.payload,
-      },
-      () => this.reportListenerFailure(),
-    );
+    listeners.dispatch({
+      tokenReference: message.tokenReference,
+      segmentId: message.segmentId,
+      messageId: message.messageId,
+      timestamp: message.timestamp,
+      payload: message.payload,
+    });
   } // end method deliverMessage
 
   private receiveSocketClose(attemptGeneration: number): void {
@@ -707,6 +713,8 @@ export class Channel {
     if (this.currentState !== "connected") return;
 
     if (error instanceof ProtocolError) {
+      // The connection layer closes the socket after reporting an error, so
+      // only the stale reference is dropped here — no second close.
       this.handle = undefined;
       this.failTerminal(error);
       return;
@@ -715,12 +723,7 @@ export class Channel {
   } // end method receiveSocketError
 
   private enterReconnecting(): void {
-    this.rejectPendingPresenceQuery(
-      new ConnectionError(
-        "Transport",
-        "Connection lost during presence query.",
-      ),
-    );
+    this.rejectPresenceQueryOnConnectionLoss();
     const now = this.internals.clock();
     if (now - this.connectedAtMonotonic >= retryBudgetResetMs)
       this.retriesUsed = 0;
@@ -790,23 +793,15 @@ export class Channel {
 
     if (generation !== this.generation) return;
     this.setState("connected");
-    this.recoveryListeners.dispatch(
-      {
-        retryIndex: attemptIndex,
-        possibleGaps: true,
-        possibleDuplicates: true,
-      },
-      () => this.reportListenerFailure(),
-    );
+    this.recoveryListeners.dispatch({
+      retryIndex: attemptIndex,
+      possibleGaps: true,
+      possibleDuplicates: true,
+    });
   } // end method runReconnectAttempt
 
   private failTerminal(error: ChannelError): void {
-    this.rejectPendingPresenceQuery(
-      new ConnectionError(
-        "Transport",
-        "Connection lost during presence query.",
-      ),
-    );
+    this.rejectPresenceQueryOnConnectionLoss();
     this.generation += 1;
     this.clearRetryTimer();
     this.emitError(error);
@@ -822,7 +817,7 @@ export class Channel {
 
   private setState(state: ChannelState): void {
     this.currentState = state;
-    this.stateListeners.dispatch(state, () => this.reportListenerFailure());
+    this.stateListeners.dispatch(state);
   } // end method setState
 
   private reportListenerFailure(): void {
@@ -835,7 +830,7 @@ export class Channel {
     if (this.dispatchingErrors) return;
     this.dispatchingErrors = true;
     try {
-      this.errorListeners.dispatch(error, () => undefined);
+      this.errorListeners.dispatch(error);
     } finally {
       this.dispatchingErrors = false;
     }

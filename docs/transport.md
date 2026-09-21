@@ -1,6 +1,6 @@
 # C3 direct connection
 
-C3 uses native WebSocket directly. `ConnectionHandler.openConnection()` requests credentials, builds channel URL, waits for native `open`, then returns `ConnectionHandle`. C3 stays internal; package entrypoint remains empty.
+C3 uses native WebSocket directly. `openConnection()` requests credentials, builds channel URL, waits for native `open`, then returns `ConnectionHandle`. C3 stays internal to the package; the channel layer (C4+) is the only consumer and the public entrypoint never exposes it.
 
 ## Credentials and connection
 

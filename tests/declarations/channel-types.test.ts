@@ -18,7 +18,7 @@ import type {
   CredentialProvider,
   CredentialRequest,
   Credentials,
-} from "../../src/credentials";
+} from "../../src/credential-types";
 
 describe("channel type contracts", () => {
   it("keeps the public lifecycle shapes hand-written", () => {

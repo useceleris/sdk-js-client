@@ -1,10 +1,11 @@
 export const maximumRetries = 10;
-export const retryBaseDelayMs = 500;
-export const retryDelayCapMs = 30_000;
 export const retryBudgetResetMs = 60_000;
 export const closeBudgetMs = 5_000;
-export const replayLookbackCapMs = 4_294_967_295;
-export const replayOverlapMs = 5_000;
+
+const retryBaseDelayMs = 500;
+const retryDelayCapMs = 30_000;
+const replayLookbackCapMs = 4_294_967_295;
+const replayOverlapMs = 5_000;
 
 export function computeRetryDelayMs(
   retryIndex: number,

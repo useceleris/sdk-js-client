@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { ConnectionHandler } from "../../src/connection";
+import { openConnection } from "../../src/connection";
 import type {
   CredentialProvider,
   CredentialRequest,
-} from "../../src/credentials";
+} from "../../src/credential-types";
 import { ConfigurationError, ProtocolError } from "../../src/errors";
 import { utf8 } from "../fixtures/codec-vectors";
 import { sockets, useTestWebSockets } from "../helpers/websocket";
@@ -32,14 +32,11 @@ useTestWebSockets();
 describe("connection attempt", () => {
   it("awaits open and passes fresh initial credentials", async () => {
     const options = setup();
-    const handler = new ConnectionHandler();
     let resolved = false;
-    const pending = handler
-      .openConnection(configuration, options)
-      .then((handle) => {
-        resolved = true;
-        return handle;
-      });
+    const pending = openConnection(configuration, options).then((handle) => {
+      resolved = true;
+      return handle;
+    });
 
     await flushCredentials();
     expect(resolved).toBe(false);
@@ -60,7 +57,7 @@ describe("connection attempt", () => {
     await pending;
     expect(resolved).toBe(true);
 
-    const second = handler.openConnection(configuration, options);
+    const second = openConnection(configuration, options);
     await flushCredentials();
     sockets[1]!.open();
     await second;
@@ -74,10 +71,7 @@ describe("connection attempt", () => {
       disconnectedAt: 1_000,
       replayLookbackMs: 9_500,
     };
-    const pending = new ConnectionHandler().openConnection(
-      { ...configuration, recovery },
-      options,
-    );
+    const pending = openConnection({ ...configuration, recovery }, options);
     await flushCredentials();
     sockets[0]!.open();
     await pending;
@@ -96,9 +90,9 @@ describe("connection attempt", () => {
   ])("rejects invalid credentials %#", async (value) => {
     const options = setup();
     options.credentialProvider.mockResolvedValue(value as typeof credentials);
-    await expect(
-      new ConnectionHandler().openConnection(configuration, options),
-    ).rejects.toBeInstanceOf(ConfigurationError);
+    await expect(openConnection(configuration, options)).rejects.toBeInstanceOf(
+      ConfigurationError,
+    );
     expect(sockets).toHaveLength(0);
   });
 
@@ -116,9 +110,9 @@ describe("connection attempt", () => {
         if (asynchronous) return Promise.reject(error);
         throw error;
       });
-      const error = await new ConnectionHandler()
-        .openConnection(configuration, options)
-        .catch((failure: unknown) => failure);
+      const error = await openConnection(configuration, options).catch(
+        (failure: unknown) => failure,
+      );
       expect(error).toMatchObject({
         code: "Transport",
         message: "Credential acquisition failed.",
@@ -132,9 +126,9 @@ describe("connection attempt", () => {
   it("rejects unavailable WebSocket before requesting credentials", async () => {
     vi.stubGlobal("WebSocket", undefined);
     const options = setup();
-    await expect(
-      new ConnectionHandler().openConnection(configuration, options),
-    ).rejects.toMatchObject({ code: "Configuration" });
+    await expect(openConnection(configuration, options)).rejects.toMatchObject({
+      code: "Configuration",
+    });
     expect(options.credentialProvider).not.toHaveBeenCalled();
   });
 
@@ -142,10 +136,7 @@ describe("connection attempt", () => {
     "rejects %s before open and ignores later events",
     async (event) => {
       const options = setup();
-      const pending = new ConnectionHandler().openConnection(
-        configuration,
-        options,
-      );
+      const pending = openConnection(configuration, options);
       await flushCredentials();
       if (event === "error") sockets[0]!.fail();
       else sockets[0]!.disconnect();
@@ -163,9 +154,9 @@ describe("connection attempt", () => {
         }
       },
     );
-    const error = await new ConnectionHandler()
-      .openConnection(configuration, setup())
-      .catch((failure: unknown) => failure);
+    const error = await openConnection(configuration, setup()).catch(
+      (failure: unknown) => failure,
+    );
     expect(error).toMatchObject({ code: "Transport" });
     expect(String(error)).not.toContain("synthetic-secret");
   });
@@ -185,7 +176,7 @@ describe("connection attempt", () => {
             resolveCredentials = resolve;
           }),
       );
-      const pending = new ConnectionHandler().openConnection(configuration, {
+      const pending = openConnection(configuration, {
         ...options,
         signal: controller.signal,
       });
@@ -215,10 +206,7 @@ describe("connection attempt", () => {
           setTimeout(() => resolve(credentials), 10_000),
         ),
     );
-    const pending = new ConnectionHandler().openConnection(
-      configuration,
-      options,
-    );
+    const pending = openConnection(configuration, options);
     const rejection = expect(pending).rejects.toMatchObject({
       code: "Timeout",
     });
@@ -237,7 +225,7 @@ describe("connection attempt", () => {
     options.credentialProvider.mockImplementation(
       () => new Promise(() => undefined),
     );
-    const pending = new ConnectionHandler().openConnection(configuration, {
+    const pending = openConnection(configuration, {
       ...options,
       timeoutMs: 5_000,
     });
@@ -254,7 +242,7 @@ describe("connection attempt", () => {
     controller.abort("synthetic-secret");
     const options = setup();
     await expect(
-      new ConnectionHandler().openConnection(configuration, {
+      openConnection(configuration, {
         ...options,
         signal: controller.signal,
       }),
@@ -265,7 +253,7 @@ describe("connection attempt", () => {
   it("cancels during handshake and removes deadline", async () => {
     vi.useFakeTimers();
     const controller = new AbortController();
-    const pending = new ConnectionHandler().openConnection(configuration, {
+    const pending = openConnection(configuration, {
       ...setup(),
       signal: controller.signal,
     });
@@ -289,10 +277,7 @@ describe("connection attempt", () => {
 
 describe("open connection", () => {
   async function connect(options = setup()) {
-    const pending = new ConnectionHandler().openConnection(
-      configuration,
-      options,
-    );
+    const pending = openConnection(configuration, options);
     await flushCredentials();
     const socket = sockets.at(-1)!;
     socket.open();

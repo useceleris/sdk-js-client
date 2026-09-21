@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Credentials } from "./credential-types";
 import { ConfigurationError } from "./errors";
 
 const credentialValueSchema = z
@@ -6,19 +7,12 @@ const credentialValueSchema = z
   .min(1)
   .refine((value) => !/[\uD800-\uDFFF]/u.test(value));
 
-export const credentialsSchema = z
+const credentialsSchema = z
   .object({
     payload: credentialValueSchema,
     signature: credentialValueSchema,
   })
   .readonly();
-
-export type {
-  CredentialProvider,
-  CredentialRequest,
-  Credentials,
-} from "./credential-types";
-import type { Credentials } from "./credential-types";
 
 export function getSafeParsedCredentials(credentials: unknown): Credentials {
   const parsed = credentialsSchema.safeParse(credentials);

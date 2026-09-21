@@ -1,4 +1,4 @@
-import { ConnectionHandler } from "../../src/connection";
+import { openConnection } from "../../src/connection";
 import type { ServerMessage } from "../../src/messages";
 
 const configuration = Reflect.get(globalThis, "transportConfiguration") as {
@@ -12,7 +12,7 @@ async function exerciseTransport(): Promise<unknown> {
     receive = resolve;
   });
   try {
-    const transport = await new ConnectionHandler().openConnection(
+    const transport = await openConnection(
       {
         baseUrl: configuration.baseUrl,
         channelReference: "room-1",

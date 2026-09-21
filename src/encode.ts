@@ -1,8 +1,8 @@
 import type { z } from "zod";
 import { clientCommandSchema, type ClientCommand } from "./commands";
 import { ConfigurationError } from "./errors";
+import { maximumCommandBytes } from "./limits";
 
-const maximumCommandBytes = 128 * 1024;
 type ValidatedClientCommand = z.output<typeof clientCommandSchema>;
 
 export function encodeClientCommand(command: ClientCommand): Uint8Array {

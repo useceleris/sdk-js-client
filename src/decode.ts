@@ -1,7 +1,7 @@
 import { ProtocolError } from "./errors";
+import { maximumMessageBytes } from "./limits";
 import type { PresenceConnection, ServerMessage } from "./messages";
 
-const maximumMessageBytes = 1024 * 1024;
 const maximumFragments = 4096;
 const maximumDepth = 32;
 const minimumInteger = -(1n << 63n);
@@ -204,23 +204,26 @@ export class MessageDecoder {
     return result;
   } // end method readBulkBytes
 
-  private readIdentifier(field: string): string;
-  private readIdentifier(field: string, nullable: true): string | null;
-  private readIdentifier(field: string, nullable = false): string | null {
+  private readIdentifier(field: string): string {
     const fieldStartOffset = this.offset;
-    const bytes = this.readBytes(field);
+    const text = this.readNullableIdentifier(field);
 
-    if (bytes === null) {
-      if (nullable) {
-        return null;
-      }
-
+    if (text === null) {
       throw new ProtocolError(
         "Identifier cannot be null.",
         field,
         fieldStartOffset,
       );
     }
+
+    return text;
+  } // end method readIdentifier
+
+  private readNullableIdentifier(field: string): string | null {
+    const fieldStartOffset = this.offset;
+    const bytes = this.readBytes(field);
+
+    if (bytes === null) return null;
 
     const text = this.readText(bytes, field, fieldStartOffset);
 
@@ -233,7 +236,7 @@ export class MessageDecoder {
     }
 
     return text;
-  } // end method readIdentifier
+  } // end method readNullableIdentifier
 
   private readPayload(): Uint8Array {
     const fieldStartOffset = this.offset;
@@ -418,7 +421,7 @@ export class MessageDecoder {
       command: "MSG",
       tokenReference: this.readIdentifier("tokenReference"),
       segmentId: this.readIdentifier("segmentId"),
-      messageId: this.readIdentifier("messageId", true),
+      messageId: this.readNullableIdentifier("messageId"),
       timestamp: this.readInteger("timestamp"),
       payload: this.readPayload(),
     };
@@ -446,6 +449,9 @@ export class MessageDecoder {
   } // end method readPresenceResponse
 } // end class MessageDecoder
 
+// Test seam: production decodes through the connection's message callback
+// (which applies the same byte bound); the codec suites and fixtures use
+// this wrapper. It is deliberately not part of the package entrypoint.
 export function decodeServerMessage(bytes: Uint8Array): ServerMessage {
   if (!(bytes instanceof Uint8Array)) {
     throw new ProtocolError("Expected byte buffer.", "message", 0);

@@ -1,6 +1,6 @@
 import { vi } from "vitest";
 import { Channel, type ChannelInternals } from "../../src/channel";
-import type { CredentialProvider } from "../../src/credentials";
+import type { CredentialProvider } from "../../src/credential-types";
 
 export const testCredentials = {
   payload: "payload-1",

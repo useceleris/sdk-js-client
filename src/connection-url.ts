@@ -1,4 +1,4 @@
-import type { Credentials } from "./credentials";
+import type { Credentials } from "./credential-types";
 import { ConfigurationError } from "./errors";
 
 export function validateBaseUrl(

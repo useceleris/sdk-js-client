@@ -3,8 +3,8 @@ import type {
   CredentialProvider,
   CredentialRequest,
   Credentials,
-} from "../../src/credentials";
-import { ConnectionHandler, type ConnectionHandle } from "../../src/connection";
+} from "../../src/credential-types";
+import { openConnection, type ConnectionHandle } from "../../src/connection";
 
 test("credential acquisition and connection results use portable async contracts", () => {
   expectTypeOf<Parameters<CredentialProvider>>().toEqualTypeOf<
@@ -13,7 +13,7 @@ test("credential acquisition and connection results use portable async contracts
   expectTypeOf<ReturnType<CredentialProvider>>().toEqualTypeOf<
     Promise<Credentials>
   >();
-  expectTypeOf<ReturnType<ConnectionHandler["openConnection"]>>().toEqualTypeOf<
+  expectTypeOf<ReturnType<typeof openConnection>>().toEqualTypeOf<
     Promise<ConnectionHandle>
   >();
 });

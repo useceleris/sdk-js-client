@@ -36,7 +36,7 @@ type CredentialProvider = (request: CredentialRequest) => Promise<Credentials>;
 
 The reviewed [server signer](../../sdk-js-server/src/signer.ts) returns a synchronous `SignedCredentials` with exactly these readonly string fields. Applications may wrap signing in an asynchronous provider; browser applications acquire credentials through their authenticated application endpoint. The provider resolves opaque strings unchanged. Provider failures use fixed safe errors with no raw cause: Timeout/Cancelled for those conditions; arbitrary provider failures become Transport. C3 does not recognize application-supplied Authentication/Permission claims from error properties. Never decode/re-serialize/sign credentials in the client. Never import server code in client fixtures or dependencies. Future server integration depends on the client's public API in S4/C3–C4.
 
-This is recorded client-side compatibility review, not a claim of bilateral acknowledgement or changes to S0. Server-owner acknowledgement remains pending. Provider cancellation rejects acquisition and suppresses stale results using attempt identity; an uncooperative provider cannot create a late socket. The server signer itself is synchronous and has no cancellation API. Codec operations likewise remain synchronous.
+This is recorded client-side compatibility review, not a claim of changes to S0. ACK-01 was acknowledged by `@useceleris/server` S4 (2026-09-21, against client revision `d26d80f`): the server consumes `Credentials`/`CredentialRequest`/`CredentialProvider` via type-only import and re-exports `CredentialRequest`; see the server [contracts — S4 client integration](../../sdk-js-server/docs/contracts.md). Spec-level acknowledgement remains pending. Provider cancellation rejects acquisition and suppresses stale results using attempt identity; an uncooperative provider cannot create a late socket. The server signer itself is synchronous and has no cancellation API. Codec operations likewise remain synchronous.
 
 ## Public API surface (SDK-03–09; decided 2026-09-20, revised same day to handler-based events)
 
@@ -125,7 +125,7 @@ export interface ChannelEventHandler {
 export type Message = {
   readonly tokenReference: string;
   readonly segmentId: string;
-  readonly messageId: string; // REV-01: server-assigned; "" lenient interim for null
+  readonly messageId: string; // REV-01: server-assigned, always present; null is terminal ProtocolError
   readonly timestamp: bigint;
   readonly payload: Uint8Array;
 };
@@ -164,7 +164,7 @@ Errors keep the existing three classes — `ConfigurationError`, `ProtocolError`
 
 C7 decisions: known server error names map to codes at the router — `PermissionDeniedError` becomes `ConnectionError("Permission", "Server denied permission.")`; every other name (RateLimitError, ParserError, SendError, unknown) stays the fixed Transport report. Messages remain fixed and server bytes never surface; the channel remains connected either way, and denials stay uncorrelated. `onDiagnostic` is dropped from v1 (recorded decision): no diagnostics hook or DiagnosticEvent ships, and the scheduler's silent replay-lookback cap remains documented behavior. Handshake failures keep bounded retries under Transport and are never labeled authorization failures.
 
-Never exported: `ConnectionHandler`, `ConnectionHandle`, `MessageDecoder`, `encodeClientCommand`, `decodeServerMessage`, Zod schemas, `NODE_PUB`, any signing facility.
+Never exported: `openConnection`, `ConnectionHandle`, `MessageDecoder`, `encodeClientCommand`, `decodeServerMessage`, Zod schemas, `NODE_PUB`, any signing facility.
 
 ### Minimalism constraints (binding for C4–C7)
 
@@ -216,7 +216,7 @@ C3 implements direct native WebSocket ownership and per-attempt credential acqui
 
 ## Codec decisions (SDK-01; WIRE-01–05)
 
-`encodeClientCommand` and `decodeServerMessage` are internal synchronous functions. The package entrypoint remains empty. Outbound schema discrimination uses command names PUB, SUB, UNSUB, PRES_SUB, PRES_UNSUB and PRES_LIST with descriptive fields `segmentId`, `messageId`, `payload`, `page`, `perPage`. Unknown object fields are stripped. Omitted/undefined messageId encodes null; explicit null and empty IDs reject. Empty payload bytes are valid. One outbound command per message, with bulk identifiers/payloads and LF delimiters.
+`encodeClientCommand` and `decodeServerMessage` are internal synchronous functions kept off the package entrypoint (the public surface is fixed above). Outbound schema discrimination uses command names PUB, SUB, UNSUB, PRES_SUB, PRES_UNSUB and PRES_LIST with descriptive fields `segmentId`, `messageId`, `payload`, `page`, `perPage`. Unknown object fields are stripped. Omitted/undefined messageId encodes null; explicit null and empty IDs reject. Empty payload bytes are valid. One outbound command per message, with bulk identifiers/payloads and LF delimiters.
 
 Observed layout evidence: realtime [output models](../../../celeris-realtime/app/src/server_to_client_message), [assembler](../../../celeris-realtime/app/src/message_parser/message_assembler/mod.rs), [integer parser](../../../celeris-realtime/app/src/message_parser/parsers/integer_parser.rs), [command parsers](../../../celeris-realtime/app/src/message_parser/parsers/command_parser), and [newline tests](../../../celeris-realtime/app/src/tests/test_message_parser_newlines.rs). Fixtures are hand-authored from these layouts; no production encoder generated expected bytes. Rust tests were inspected, not run in this pass.
 
