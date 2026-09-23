@@ -4,7 +4,8 @@ export {
   type ChannelError,
   type ChannelState,
   type ChannelEventHandler,
-  type Message,
+  type MessageMetadata,
+  type MessageListener,
   type ServerNotice,
   type PresencePage,
   type PresenceConnection,
@@ -12,6 +13,15 @@ export {
   type RecoveryEvent,
 } from "./channel";
 export { Segment } from "./segment";
+export {
+  textPayload,
+  jsonPayload,
+  readText,
+  readJson,
+  createPayloadCodec,
+  type PayloadCodec,
+  type BoundPayloadCodec,
+} from "./payload";
 export type {
   Credentials,
   CredentialRequest,

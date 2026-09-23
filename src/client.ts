@@ -6,16 +6,20 @@ import { channelReferenceSchema } from "./credentials";
 import { ConfigurationError } from "./errors";
 import { monotonicNow } from "./reconnect";
 
+// Consumers do not configure where Celeris lives; overriding is for local
+// stacks and other deployments (ENDPOINT-01).
+const defaultBaseUrl = "wss://realtime.useceleris.com";
+
 const clientOptionsSchema = z.object({
-  baseUrl: z.string().min(1),
+  baseUrl: z.string().min(1).default(defaultBaseUrl),
   allowInsecureLoopback: z.boolean().default(false),
   connectTimeoutMs: z.int().min(1).default(15_000),
   presenceQueryTimeoutMs: z.int().min(1).default(10_000),
 });
 
 export type ClientOptions = {
-  readonly baseUrl: string;
   readonly credentialProvider: CredentialProvider;
+  readonly baseUrl?: string;
   readonly allowInsecureLoopback?: boolean;
   readonly connectTimeoutMs?: number;
   readonly presenceQueryTimeoutMs?: number;

@@ -4,7 +4,7 @@
 // credentials from the application's authenticated endpoint. The endpoint
 // URL arrives via a page global here so the verification test can point it
 // at a local signer; in an application it is simply your own API route.
-import { createClient } from "@useceleris/client";
+import { createClient, readText } from "@useceleris/client";
 
 declare global {
   // Provided by the hosting page: base URL + credential endpoint.
@@ -33,8 +33,8 @@ async function main(): Promise<void> {
   const channel = client.channel(`browser-quickstart-${Date.now()}`);
   const chat = channel.segment("chat");
   const delivered: string[] = [];
-  chat.onMessage((message) => {
-    delivered.push(new TextDecoder().decode(message.payload));
+  chat.onMessage((payload) => {
+    delivered.push(readText(payload));
   });
   chat.subscribe();
 

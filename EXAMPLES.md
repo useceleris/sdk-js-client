@@ -14,7 +14,8 @@ A `Channel` is **one WebSocket client** — creating another `Channel`, even for
 import { createClient, type CredentialRequest } from "@useceleris/client";
 
 const client = createClient({
-  baseUrl: "wss://realtime.example.com",
+  // The endpoint is built in; set baseUrl only for a local or self-hosted
+  // stack (ws:// also needs allowInsecureLoopback).
   credentialProvider: async (request: CredentialRequest) => {
     // Your authenticated application endpoint signs least-privilege
     // credentials for exactly the requested channel. Fresh per attempt.
@@ -82,10 +83,9 @@ const chat = channel.segment("chat");
 const chatAgain = channel.segment("chat"); // same segment, same shared interest
 
 // Receive: listeners see this segment's messages on this channel.
-const stopChat = chat.onMessage((message) => {
-  // message.segmentId === "chat"; timestamp is bigint; payload is Uint8Array.
-  const body = JSON.parse(new TextDecoder().decode(message.payload));
-  console.log(message.messageId, body);
+const stopChat = chat.onMessage((payload, metadata) => {
+  // Payload first, then who sent it, its server id and timestamp.
+  console.log(metadata.messageId, metadata.tokenReference, readJson(payload));
 });
 
 // Join for messages (sends SUB; a real server-side operation — the server
@@ -100,7 +100,9 @@ await chat.publish({
 });
 
 // The default segment needs no subscribe() — membership came with connect().
-lobby.onMessage((message) => console.log("lobby:", message.messageId));
+lobby.onMessage((_payload, metadata) =>
+  console.log("lobby:", metadata.messageId),
+);
 
 // Tear down: dispose listeners, cancel the interest. When the LAST interest
 // for a non-default segment on this channel is cancelled, UNSUB is sent.
@@ -197,17 +199,94 @@ channel.events().onError((error) => {
 });
 ```
 
+## Encoding payloads
+
+Payloads are opaque bytes. Helpers cover the two common encodings, and one adapter wraps any other serializer.
+
+```ts
+// Text and JSON, both directions.
+await chat.publish({ payload: textPayload("hello") });
+await chat.publish({ payload: jsonPayload({ body: "hello", at: Date.now() }) });
+
+chat.onMessage((payload, metadata) => {
+  console.log(metadata.tokenReference, readText(payload));
+});
+```
+
+`readJson<T>()` asserts the type rather than validating it — schema-check payloads from peers you do not control. Invalid UTF-8, invalid JSON, and values `JSON.stringify` cannot represent (`undefined`, bigint, circular) each throw a `ConfigurationError` with a fixed message.
+
+For protobuf, MessagePack, CBOR or anything else, wrap your encoder once. The SDK never bundles serializers, so you keep your own library and version:
+
+```ts
+type Chat = { body: string };
+
+// Swap these two functions for your serializer's encode/decode.
+const chatCodec = createPayloadCodec<Chat>({
+  encode: (value) => jsonPayload(value),
+  decode: (bytes) => readJson<Chat>(bytes),
+});
+
+await chat.publish({ payload: chatCodec.encodePayload({ body: "hello" }) });
+chat.onMessage((payload) => console.log(chatCodec.readPayload(payload).body));
+```
+
+Errors thrown by your own `encode`/`decode` propagate unchanged — they are yours, not the SDK's.
+
+## MessagePack payloads
+
+```ts
+type Reading = { sensor: string; value: number; at: number };
+
+const readings = createPayloadCodec<Reading>({
+  encode: (value) => encode(value),
+  decode: (bytes) => decode(bytes) as Reading,
+});
+
+await chat.publish({
+  payload: readings.encodePayload({ sensor: "t-1", value: 21.5, at: 1 }),
+});
+chat.onMessage((payload, metadata) => {
+  const reading = readings.readPayload(payload);
+  console.log(metadata.tokenReference, reading.sensor, reading.value);
+});
+```
+
+`@msgpack/msgpack` returns a `Uint8Array` directly, so the codec is a one-liner each way. It preserves binary fields and distinguishes integers from floats, which JSON cannot.
+
+## Protobuf payloads
+
+```ts
+// Define the schema once; generated classes work the same way.
+const ChatMessage = new Type("ChatMessage")
+  .add(new Field("body", 1, "string"))
+  .add(new Field("sentAt", 2, "uint64"));
+
+type ChatWire = { body: string; sentAt: number };
+
+const chatWire = createPayloadCodec<ChatWire>({
+  encode: (value) => ChatMessage.encode(value).finish(),
+  decode: (bytes) => ChatMessage.decode(bytes) as unknown as ChatWire,
+});
+
+await chat.publish({
+  payload: chatWire.encodePayload({ body: "hello", sentAt: 1 }),
+});
+chat.onMessage((payload) => console.log(chatWire.readPayload(payload).body));
+```
+
+Protobuf keeps payloads compact and schema-checked. Field numbers are the contract: add fields, never renumber or reuse them. The SDK never inspects your bytes, so schema evolution and validation stay yours.
+
 ## Replay, gaps and duplicates
 
 Reconnects request fresh credentials with a replay lookback covering the outage plus a five-second overlap, and joining a segment replays per the token's replay mode. Replayed messages carry their original server-assigned ids, and the client deduplicates within a bounded 1024-id window per channel — duplicates beyond it remain possible, which is why every `RecoveryEvent` declares `possibleGaps` and `possibleDuplicates`. There is no durable cursor: replay is bounded local recovery, not history.
 
 ## Working with bigint values
 
-`Message.timestamp` and all presence metadata are `bigint` (exact signed-64 wire values). `JSON.stringify` throws on bigint — serialize them explicitly as decimal strings:
+`MessageMetadata.timestamp` and all presence metadata are `bigint` (exact signed-64 wire values). `JSON.stringify` throws on bigint — serialize them explicitly as decimal strings:
 
 ```ts
 const serialized = JSON.stringify(
-  { total: page.total, timestamp: message.timestamp },
+  { total: page.total, timestamp: metadata.timestamp },
   (key, value) => (typeof value === "bigint" ? value.toString() : value),
 );
 void serialized;

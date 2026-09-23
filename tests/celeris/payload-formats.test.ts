@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  createPayloadCodec,
+  jsonPayload,
+  readJson,
+  readText,
+  textPayload,
+} from "../../src/payload";
+import {
   connectedChannel,
   nextMessage,
   uniqueChannelReference,
@@ -75,8 +82,8 @@ describe("celeris payload formats", () => {
     const publisher = await connectedChannel(reference);
     const receiver = await connectedChannel(reference);
     const received = new Map<number, Uint8Array>();
-    receiver.segment("formats").onMessage((message) => {
-      received.set(message.payload.length, message.payload);
+    receiver.segment("formats").onMessage((payload) => {
+      received.set(payload.length, payload);
     });
     receiver.segment("formats").subscribe();
     await settle();
@@ -118,6 +125,48 @@ describe("celeris payload formats", () => {
         protobuf.slice(afterLength, afterLength + length),
       ),
     ).toBe("안녕 celeris");
+
+    await publisher.close();
+    await receiver.close();
+  });
+  it("carries helper and codec payloads through the live server", async () => {
+    const reference = uniqueChannelReference("fmt-helpers");
+    const publisher = await connectedChannel(reference);
+    const receiver = await connectedChannel(reference);
+    // Deliveries from one origin keep their order, so arrival order is the
+    // publish order.
+    const received: Uint8Array[] = [];
+    receiver.segment("formats").onMessage((payload) => {
+      received.push(payload);
+    });
+    receiver.segment("formats").subscribe();
+    await settle();
+
+    // The codec wraps an arbitrary serializer; here the protobuf vector.
+    const vectorCodec = createPayloadCodec<{ marker: number }>({
+      encode: () => protobufVector,
+      decode: (bytes) => ({ marker: bytes[0]! }),
+    });
+
+    await publisher.segment("formats").publish({ payload: textPayload("hi") });
+    await publisher
+      .segment("formats")
+      .publish({ payload: jsonPayload({ ok: true }) });
+    await publisher
+      .segment("formats")
+      .publish({ payload: vectorCodec.encodePayload({ marker: 8 }) });
+
+    await nextMessage(
+      receiver.segment("formats"),
+      () => received.length >= 3,
+      "the three helper deliveries",
+      20_000,
+    );
+
+    expect(readText(received[0]!)).toBe("hi");
+    expect(readJson<{ ok: boolean }>(received[1]!)).toEqual({ ok: true });
+    expect(vectorCodec.readPayload(received[2]!)).toEqual({ marker: 8 });
+    expect(Array.from(received[2]!)).toEqual(Array.from(protobufVector));
 
     await publisher.close();
     await receiver.close();

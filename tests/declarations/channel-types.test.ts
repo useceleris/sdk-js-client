@@ -4,7 +4,8 @@ import type {
   ChannelError,
   ChannelEventHandler,
   ChannelState,
-  Message,
+  MessageMetadata,
+  MessageListener,
   PresenceConnection,
   PresencePage,
   RecoveryEvent,
@@ -59,13 +60,20 @@ describe("channel type contracts", () => {
   });
 
   it("keeps the segment and message shapes hand-written", () => {
-    expectTypeOf<Message>().toEqualTypeOf<{
+    expectTypeOf<MessageMetadata>().toEqualTypeOf<{
       readonly tokenReference: string;
       readonly segmentId: string;
       readonly messageId: string;
       readonly timestamp: bigint;
-      readonly payload: Uint8Array;
     }>();
+
+    // MSG-01: payload first, the rest of the message beside it.
+    expectTypeOf<MessageListener>().toEqualTypeOf<
+      (payload: Uint8Array, metadata: MessageMetadata) => void
+    >();
+    expectTypeOf<
+      Parameters<Segment["onMessage"]>[0]
+    >().toEqualTypeOf<MessageListener>();
 
     expectTypeOf<Channel["segment"]>().toEqualTypeOf<
       (segmentId?: string) => Segment
@@ -139,9 +147,10 @@ describe("channel type contracts", () => {
       (request: CredentialRequest) => Promise<Credentials>
     >();
 
+    // ENDPOINT-01: baseUrl is optional; the package knows the endpoint.
     expectTypeOf<ClientOptions>().toEqualTypeOf<{
-      readonly baseUrl: string;
       readonly credentialProvider: CredentialProvider;
+      readonly baseUrl?: string;
       readonly allowInsecureLoopback?: boolean;
       readonly connectTimeoutMs?: number;
       readonly presenceQueryTimeoutMs?: number;
@@ -170,7 +179,7 @@ describe("channel type contracts", () => {
 
 function verifyReadonly(
   event: RecoveryEvent,
-  message: Message,
+  metadata: MessageMetadata,
   page: PresencePage,
   notice: ServerNotice,
   error: ChannelError,
@@ -180,9 +189,9 @@ function verifyReadonly(
   // @ts-expect-error possibleGaps is readonly
   event.possibleGaps = true;
   // @ts-expect-error messageId is readonly
-  message.messageId = "changed";
-  // @ts-expect-error payload is readonly
-  message.payload = new Uint8Array();
+  metadata.messageId = "changed";
+  // @ts-expect-error tokenReference is readonly
+  metadata.tokenReference = "changed";
   // @ts-expect-error total is readonly
   page.total = 0n;
   // @ts-expect-error timestamp is readonly

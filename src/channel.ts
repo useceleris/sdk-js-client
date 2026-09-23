@@ -19,13 +19,18 @@ const maximumPendingCommands = 64;
 
 export type ChannelError = ConfigurationError | ConnectionError | ProtocolError;
 
-export type Message = {
+export type MessageMetadata = {
   readonly tokenReference: string;
   readonly segmentId: string;
   readonly messageId: string; // server-assigned, always present (REV-01, C8-verified)
   readonly timestamp: bigint;
-  readonly payload: Uint8Array;
 };
+
+// Payload first so decoding composes; everything else arrives beside it.
+export type MessageListener = (
+  payload: Uint8Array,
+  metadata: MessageMetadata,
+) => void;
 
 export type ServerNotice = {
   readonly timestamp: bigint;
@@ -90,12 +95,14 @@ type RecoveryContext =
       readonly replayLookbackMs: number;
     };
 
-class ListenerSet<T> {
-  private readonly entries: { callback: (value: T) => void }[] = [];
+// Variadic so message listeners can take (payload, metadata) while the
+// other event listeners take a single value.
+class ListenerSet<T extends readonly unknown[]> {
+  private readonly entries: { callback: (...values: T) => void }[] = [];
 
   constructor(private readonly containFailure: () => void) {}
 
-  add(callback: (value: T) => void): () => void {
+  add(callback: (...values: T) => void): () => void {
     const entry = { callback };
     this.entries.push(entry);
 
@@ -105,12 +112,12 @@ class ListenerSet<T> {
     };
   } // end method add
 
-  dispatch(value: T): void {
+  dispatch(...values: T): void {
     for (const entry of this.entries.slice()) {
       if (!this.entries.includes(entry)) continue;
 
       try {
-        entry.callback(value);
+        entry.callback(...values);
       } catch {
         this.containFailure();
       }
@@ -155,7 +162,10 @@ export class Channel {
 
   private pendingCommands = 0;
   private readonly dedupWindow = new DedupWindow();
-  private readonly segmentListeners = new Map<string, ListenerSet<Message>>();
+  private readonly segmentListeners = new Map<
+    string,
+    ListenerSet<Parameters<MessageListener>>
+  >();
   private readonly messageInterests = new Map<string, number>();
   private readonly presenceInterests = new Map<string, number>();
   private pendingPresenceQuery:
@@ -169,18 +179,18 @@ export class Channel {
       }
     | undefined;
 
-  private readonly stateListeners = new ListenerSet<ChannelState>(() =>
+  private readonly stateListeners = new ListenerSet<[ChannelState]>(() =>
     this.reportListenerFailure(),
   );
-  private readonly recoveryListeners = new ListenerSet<RecoveryEvent>(() =>
+  private readonly recoveryListeners = new ListenerSet<[RecoveryEvent]>(() =>
     this.reportListenerFailure(),
   );
   // Error-listener exceptions are swallowed: reporting them would re-enter
   // error dispatch (emitError also guards against that re-entry).
-  private readonly errorListeners = new ListenerSet<ChannelError>(
+  private readonly errorListeners = new ListenerSet<[ChannelError]>(
     () => undefined,
   );
-  private readonly noticeListeners = new ListenerSet<ServerNotice>(() =>
+  private readonly noticeListeners = new ListenerSet<[ServerNotice]>(() =>
     this.reportListenerFailure(),
   );
   private readonly handler: ChannelEventHandler = {
@@ -362,11 +372,13 @@ export class Channel {
 
   private addMessageListener(
     segmentId: string,
-    listener: (message: Message) => void,
+    listener: MessageListener,
   ): () => void {
     let listeners = this.segmentListeners.get(segmentId);
     if (!listeners) {
-      listeners = new ListenerSet<Message>(() => this.reportListenerFailure());
+      listeners = new ListenerSet<Parameters<MessageListener>>(() =>
+        this.reportListenerFailure(),
+      );
       this.segmentListeners.set(segmentId, listeners);
     }
 
@@ -683,12 +695,11 @@ export class Channel {
     const listeners = this.segmentListeners.get(message.segmentId);
     if (!listeners) return;
 
-    listeners.dispatch({
+    listeners.dispatch(message.payload, {
       tokenReference: message.tokenReference,
       segmentId: message.segmentId,
       messageId: message.messageId,
       timestamp: message.timestamp,
-      payload: message.payload,
     });
   } // end method deliverMessage
 

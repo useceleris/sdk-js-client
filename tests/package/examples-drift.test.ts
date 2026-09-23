@@ -26,9 +26,13 @@ test("EXAMPLES.md snippets compile against the public surface", () => {
 
   const preamble = [
     'import { createClient, Client, Channel, Segment, ConnectionError } from "@useceleris/client";',
-    'import type { CredentialRequest, Message, PresencePage } from "@useceleris/client";',
+    'import { textPayload, jsonPayload, readText, readJson, createPayloadCodec } from "@useceleris/client";',
+    'import type { CredentialRequest, MessageMetadata, PresencePage } from "@useceleris/client";',
+    // Serializer libraries used by the payload-format sections.
+    'import { encode, decode } from "@msgpack/msgpack";',
+    'import { Type, Field } from "protobufjs";',
     "declare const page: PresencePage;",
-    "declare const message: Message;",
+    "declare const metadata: MessageMetadata;",
     "declare const client: Client;",
     "declare const channel: Channel;",
     "declare const chat: Segment;",
@@ -57,6 +61,20 @@ test("EXAMPLES.md snippets compile against the public surface", () => {
           paths: {
             "@useceleris/client": [
               join(repositoryRoot, "src/index.ts").replaceAll("\\", "/"),
+            ],
+            // The temp directory sits outside the repository, so the
+            // documented serializers need explicit resolution.
+            "@msgpack/msgpack": [
+              join(repositoryRoot, "node_modules/@msgpack/msgpack").replaceAll(
+                "\\",
+                "/",
+              ),
+            ],
+            protobufjs: [
+              join(repositoryRoot, "node_modules/protobufjs").replaceAll(
+                "\\",
+                "/",
+              ),
             ],
           },
         },

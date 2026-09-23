@@ -40,7 +40,7 @@ This is recorded client-side compatibility review, not a claim of changes to S0.
 
 ## Public API surface (SDK-03–09; decided 2026-09-20, revised same day to handler-based events)
 
-Names for the C4–C7 public surface are now fixed. The entrypoint stays empty until C4 exports the first subset. Zod inference never crosses into public declarations: every exported type below is hand-written, and internal `ClientCommand`/`ServerMessage` shapes map onto `Message`, `ServerNotice` and `PresencePage`. Consumer usage is mirrored in [EXAMPLES.md](../EXAMPLES.md), which must change in the same commit as this section.
+Names for the C4–C7 public surface are now fixed; C11 revised three of them (HELP-01, ENDPOINT-01, MSG-01 below) while nothing was yet published. The entrypoint stays empty until C4 exports the first subset. Zod inference never crosses into public declarations: every exported type below is hand-written, and internal `ClientCommand`/`ServerMessage` shapes map onto `MessageMetadata`, `ServerNotice` and `PresencePage`. Consumer usage is mirrored in [EXAMPLES.md](../EXAMPLES.md), which must change in the same commit as this section.
 
 **DEV-01 (recorded deviation from specs conventions):** events are consumed through handler objects with named `on*` registration methods, not async iterables. The specs' JavaScript conventions mandate "bounded async iterables"; this local decision supersedes that for this package, pending spec revision. Consequence: delivery is synchronous listener dispatch — there is no consumer-side delivery queue, so the shared contract's 256-delivery/1 MiB queue and its `Backpressure` overflow path do not apply to inbound delivery (writer bounds are unchanged). A slow listener blocks dispatch instead of growing a queue; native receive buffering remains the platform limit. Listener exceptions are contained and cannot corrupt SDK state.
 
@@ -48,8 +48,9 @@ Names for the C4–C7 public surface are now fixed. The entrypoint stays empty u
 export function createClient(options: ClientOptions): Client;
 
 export type ClientOptions = {
-  readonly baseUrl: string; // wss; ws only via allowInsecureLoopback
   readonly credentialProvider: CredentialProvider;
+  readonly baseUrl?: string; // ENDPOINT-01: defaults to wss://realtime.useceleris.com;
+  // wss only, ws via allowInsecureLoopback
   readonly allowInsecureLoopback?: boolean; // default false
   readonly connectTimeoutMs?: number; // default 15_000
   readonly presenceQueryTimeoutMs?: number; // default 10_000
@@ -91,7 +92,10 @@ export class Segment {
   // handles with independent replay cursors (SEG-01).
   readonly segmentId: string;
   subscribe(): Subscription; // joins for messages (SUB); ref-counted channel-wide
-  onMessage(listener: (message: Message) => void): () => void; // this segment's deliveries on this channel
+  // MSG-01: payload first, the rest of the message second.
+  onMessage(
+    listener: (payload: Uint8Array, metadata: MessageMetadata) => void,
+  ): () => void; // this segment's deliveries on this channel
   publish(options: {
     payload: Uint8Array; // empty valid; ≤128 KiB encoded
     messageId?: string; // optional; empty rejected
@@ -122,13 +126,16 @@ export interface ChannelEventHandler {
   // consumers can type onError listeners and rejections.
 }
 
-export type Message = {
+export type MessageMetadata = {
   readonly tokenReference: string;
   readonly segmentId: string;
   readonly messageId: string; // REV-01: server-assigned, always present; null is terminal ProtocolError
   readonly timestamp: bigint;
-  readonly payload: Uint8Array;
 };
+export type MessageListener = (
+  payload: Uint8Array,
+  metadata: MessageMetadata,
+) => void;
 export type ServerNotice = {
   readonly timestamp: bigint;
   readonly payload: Uint8Array;
@@ -153,20 +160,45 @@ export type RecoveryEvent = {
   readonly possibleDuplicates: true; // beyond the REV-01 dedup window
 };
 
+// HELP-01: payload encoding helpers. Pure functions over bytes, not methods
+// on Segment — they never touch a connection.
+export function textPayload(value: string): Uint8Array;
+export function jsonPayload(value: unknown): Uint8Array;
+export function readText(payload: Uint8Array): string;
+export function readJson<T>(payload: Uint8Array): T; // asserts, does not validate
+
+export type PayloadCodec<T> = {
+  encode(value: T): Uint8Array;
+  decode(bytes: Uint8Array): T;
+};
+export type BoundPayloadCodec<T> = {
+  encodePayload(value: T): Uint8Array;
+  readPayload(payload: Uint8Array): T;
+};
+export function createPayloadCodec<T>(
+  codec: PayloadCodec<T>,
+): BoundPayloadCodec<T>;
+
 export type { Credentials, CredentialRequest, CredentialProvider }; // shapes above, exported from C4
 ```
 
 Operation errors reject their Promises. Asynchronous terminal failures (native socket error, protocol violation, callback containment) surface through `events().onError` and drive the state to `failed` via `onStateChange`; nothing is silently dropped.
 
-**REV-01 (2026-09-20; VERIFIED live in C8):** the server always assigns a MSG id — corroborated by server source (omitted ids replaced with `msg_{node}_{ulid}` before fanout) and verified against the running e2e stack: every delivered, replayed and cross-node message carried a `msg_*` id. The client owns idempotent delivery: public `Message.messageId` is non-null, and deliveries are deduplicated by id within a bounded, non-configurable per-channel window (a 1024-entry insertion-order id set) before fanout; ids are recorded even when no listener exists. The window survives reconnect and clears on each explicit `connect()`; C7 relies on it to absorb replay duplicates, and duplicates beyond the window remain possible and stay declared in the recovery event. The lenient interim is retired: a MSG whose decoded id is null is protocol corruption at the delivery layer (`ProtocolError`, terminal). This supersedes the earlier "no implicit deduplication" wording below for message delivery; ordering is still preserved and no durable cursor or global ordering claim follows. Spec revision remains pending.
+**REV-01 (2026-09-20; VERIFIED live in C8):** the server always assigns a MSG id — corroborated by server source (omitted ids replaced with `msg_{node}_{ulid}` before fanout) and verified against the running e2e stack: every delivered, replayed and cross-node message carried a `msg_*` id. The client owns idempotent delivery: public `MessageMetadata.messageId` is non-null, and deliveries are deduplicated by id within a bounded, non-configurable per-channel window (a 1024-entry insertion-order id set) before fanout; ids are recorded even when no listener exists. The window survives reconnect and clears on each explicit `connect()`; C7 relies on it to absorb replay duplicates, and duplicates beyond the window remain possible and stay declared in the recovery event. The lenient interim is retired: a MSG whose decoded id is null is protocol corruption at the delivery layer (`ProtocolError`, terminal). This supersedes the earlier "no implicit deduplication" wording below for message delivery; ordering is still preserved and no durable cursor or global ordering claim follows. Spec revision remains pending.
 
 Errors keep the existing three classes — `ConfigurationError`, `ProtocolError`, `ConnectionError` — with no new hierarchy, base class or `category` alias field. `ConnectionErrorCode` widened as stages landed: `OperationInProgress` (C4), `DeliveryUnknown` (C5), `Permission` (C7). Ten of the shared contract's eleven categories are realized (`"Configuration"` and `"ProtocolError"` come from the other two classes). **DEV-02:** `Authentication` is omitted — native WebSocket exposes the handshake HTTP status in no runtime, and no authentication-named wire error exists, so the category has no knowable source; it joins the union only when one appears (spec revision pending).
 
 C7 decisions: known server error names map to codes at the router — `PermissionDeniedError` becomes `ConnectionError("Permission", "Server denied permission.")`; every other name (RateLimitError, ParserError, SendError, unknown) stays the fixed Transport report. Messages remain fixed and server bytes never surface; the channel remains connected either way, and denials stay uncorrelated. `onDiagnostic` is dropped from v1 (recorded decision): no diagnostics hook or DiagnosticEvent ships, and the scheduler's silent replay-lookback cap remains documented behavior. Handshake failures keep bounded retries under Transport and are never labeled authorization failures.
 
+**HELP-01 (2026-09-23, C11):** payloads stay opaque bytes on the wire, but every consumer was writing the same `new TextEncoder().encode(JSON.stringify(v))` pair, so the package exports four pure functions (`textPayload`, `jsonPayload`, `readText`, `readJson`) and one adapter (`createPayloadCodec`). Per-format helpers were rejected: a `protobufPayload` or `msgpackPayload` would drag a serializer into a package whose only runtime dependency is zod, so the adapter takes the caller's `encode`/`decode` closures — their schema, their library — and returns the same `encodePayload`/`readPayload` shape the built-ins have. The helpers are free functions rather than `Segment` methods because they touch no connection state and must be usable on the publishing and consuming side alike. Failures reuse the closed error set: `ConfigurationError` with the fixed messages `"Value is not JSON-serializable."`, `"Payload is not valid UTF-8."`, `"Payload is not valid JSON."` and `"Codec must provide encode and decode functions."`, carrying no `cause` and never echoing the input. A caller's own `encode`/`decode` throw propagates unchanged — it is their error, not an SDK failure, mirroring how the server package propagates its claims callback. `readJson<T>` asserts and does not validate; untrusted payloads still need a schema check. No size checks: `publish()` already enforces the 128 KiB bound.
+
+**ENDPOINT-01 (2026-09-23, C11):** consumers do not configure where Celeris lives. `baseUrl` defaults to `wss://realtime.useceleris.com` through the existing Zod default, so `createClient({ credentialProvider })` is the whole production setup. The option stays accepted, because the client may not read environment variables (`process` is banned in shipped code by the portability test) and local, CI and staging targeting has no other route; `validateBaseUrl` and `allowInsecureLoopback` are unchanged.
+
+**MSG-01 (2026-09-23, C11):** `onMessage` hands the listener the payload first and the remaining fields second, as `MessageMetadata`. The exported `Message` type is replaced by `MessageMetadata` (the same fields minus `payload`) plus the exported `MessageListener` alias. This separates content from envelope so the HELP-01 helpers compose directly with a listener, and it keeps every field reachable rather than forcing destructuring. Dedup, ordering and containment behaviour are untouched. This is a breaking change to the C5 listener shape, acceptable only because nothing is published yet.
+
 Never exported: `openConnection`, `ConnectionHandle`, `MessageDecoder`, `encodeClientCommand`, `decodeServerMessage`, Zod schemas, `NODE_PUB`, any signing facility.
 
-### Minimalism constraints (binding for C4–C7)
+### Minimalism constraints (binding for C4–C7, and for every later surface change)
 
 - `Client` is a stateless configuration holder with exactly one method, `channel()`. It gains no registry, shared state or connection pool.
 - `Segment` is a fully stateless proxy: it holds only its `segmentId` and the channel's delegate functions. Listeners live on `Channel` in one shared per-segment `ListenerSet` (all handler instances of a segment share it; dispose functions remain per listener), alongside interest ref-counts, dedup, writer bounds and presence-query serialization. `segment()` never opens a socket, sends a command, allocates server resources, or grows channel state; network effects come only from `subscribe()`, `publish()`, `subscribePresence()` and `presenceList()`. (SEG-01 supersedes the earlier "no `Segment` class" rule.)
@@ -174,7 +206,7 @@ Never exported: `openConnection`, `ConnectionHandle`, `MessageDecoder`, `encodeC
 - No error hierarchy; only the code-union widening above.
 - No reconnect or limit knobs in `ClientOptions`. Shared-contract defaults (10 retries, full jitter, 64-command/1 MiB writer) are authoritative and non-configurable in v1. Only the two spec-marked-configurable timeouts are options.
 - No event framework: `ChannelEventHandler` has exactly four named `on*` methods. No generic `on(name, fn)`, no string event keys, no wildcard listeners, no once/prepend variants, no listener-count APIs. Dispatch is synchronous in registration order with contained listener exceptions.
-- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement or a recorded local decision (DEV-01, REV-01, SEG-01).
+- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement or a recorded local decision (DEV-01, REV-01, SEG-01, HELP-01, ENDPOINT-01, MSG-01).
 
 ## Segment model (SEG-01; owner directive 2026-09-20, verified against celeris-realtime source)
 

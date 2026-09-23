@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import type { Message } from "../../src/index";
 import {
   connectedChannel,
   nextError,
   nextMessage,
   uniqueChannelReference,
+  type DeliveredMessage,
 } from "./helpers/environment";
 
 const utf8 = (value: string) => new TextEncoder().encode(value);
@@ -13,9 +13,11 @@ const text = (payload: Uint8Array) => new TextDecoder().decode(payload);
 function collect(
   channel: Awaited<ReturnType<typeof connectedChannel>>,
   segmentId: string,
-): Message[] {
-  const received: Message[] = [];
-  channel.segment(segmentId).onMessage((message) => received.push(message));
+): DeliveredMessage[] {
+  const received: DeliveredMessage[] = [];
+  channel
+    .segment(segmentId)
+    .onMessage((payload, metadata) => received.push({ payload, ...metadata }));
   channel.segment(segmentId).subscribe();
 
   return received;
@@ -80,8 +82,10 @@ describe("celeris messaging", () => {
     const publisher = await connectedChannel(reference);
     const receiver = await connectedChannel(reference);
     const alpha = collect(receiver, "alpha");
-    const beta: Message[] = [];
-    receiver.segment("beta").onMessage((message) => beta.push(message));
+    const beta: DeliveredMessage[] = [];
+    receiver
+      .segment("beta")
+      .onMessage((payload, metadata) => beta.push({ payload, ...metadata }));
     const betaMembership = receiver.segment("beta").subscribe();
     await settle();
 
@@ -111,8 +115,10 @@ describe("celeris messaging", () => {
     const reference = uniqueChannelReference("default");
     const publisher = await connectedChannel(reference);
     const receiver = await connectedChannel(reference);
-    const seen: Message[] = [];
-    receiver.segment().onMessage((message) => seen.push(message));
+    const seen: DeliveredMessage[] = [];
+    receiver
+      .segment()
+      .onMessage((payload, metadata) => seen.push({ payload, ...metadata }));
     await settle();
 
     await publisher.segment().publish({ payload: utf8("lobby") });

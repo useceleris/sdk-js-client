@@ -213,6 +213,24 @@ describe("channel lifecycle", () => {
     expect(sockets).toHaveLength(0);
   });
 
+  it("connects to the built-in endpoint when no baseUrl is given", async () => {
+    // ENDPOINT-01: consumers do not configure where Celeris lives.
+    const channel = createClient({
+      credentialProvider: async () => testCredentials,
+    }).channel("room-1");
+    const pending = channel.connect();
+
+    await flushMicrotasks();
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.url).toMatch(
+      /^wss:\/\/realtime\.useceleris\.com\/channel\/room-1\?/,
+    );
+
+    sockets[0]!.open();
+    await pending;
+    await channel.close();
+  });
+
   it("validates client options eagerly", () => {
     const credentialProvider = async () => testCredentials;
     expect(() => createClient({ baseUrl: "", credentialProvider })).toThrow(

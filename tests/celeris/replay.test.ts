@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import type { Message } from "../../src/index";
 import {
   connectedChannel,
   nextMessage,
@@ -17,8 +16,8 @@ describe("celeris replay", () => {
     const publisher = await connectedChannel(reference);
     const liveReceiver = await connectedChannel(reference);
     const liveIds: string[] = [];
-    liveReceiver.segment("history").onMessage((message) => {
-      liveIds.push(message.messageId);
+    liveReceiver.segment("history").onMessage((_payload, metadata) => {
+      liveIds.push(metadata.messageId);
     });
     liveReceiver.segment("history").subscribe();
     await settle();
@@ -39,9 +38,9 @@ describe("celeris replay", () => {
     const replayReceiver = await connectedChannel(reference, {
       replay: 60_000,
     });
-    const replayed: Message[] = [];
-    replayReceiver.segment("history").onMessage((message) => {
-      replayed.push(message);
+    const replayed: { payload: Uint8Array; messageId: string }[] = [];
+    replayReceiver.segment("history").onMessage((payload, metadata) => {
+      replayed.push({ payload, messageId: metadata.messageId });
     });
     replayReceiver.segment("history").subscribe();
 
@@ -72,8 +71,8 @@ describe("celeris replay", () => {
     const publisher = await connectedChannel(reference);
     const receiver = await connectedChannel(reference, { replay: 60_000 });
     const delivered: string[] = [];
-    receiver.segment("history").onMessage((message) => {
-      delivered.push(message.messageId);
+    receiver.segment("history").onMessage((_payload, metadata) => {
+      delivered.push(metadata.messageId);
     });
     const membership = receiver.segment("history").subscribe();
     await settle();

@@ -8,7 +8,12 @@
 // inline signer below stands in for YOUR application's credential endpoint —
 // in production keep the signing secret server-side and fetch from there.
 import { createHmac } from "node:crypto";
-import { createClient, type Credentials } from "@useceleris/client";
+import {
+  createClient,
+  jsonPayload,
+  readText,
+  type Credentials,
+} from "@useceleris/client";
 
 function signCredentials(): Credentials {
   const payload = Buffer.from(
@@ -43,15 +48,14 @@ await channel.connect();
 const chat = channel.segment("chat");
 const delivered: string[] = [];
 const membership = chat.subscribe();
-chat.onMessage((message) => {
-  // messageId is server-assigned; timestamp is a bigint; payload is bytes.
-  delivered.push(new TextDecoder().decode(message.payload));
+chat.onMessage((payload, metadata) => {
+  // Payload first; metadata carries the sender, server id and timestamp.
+  void metadata.messageId;
+  delivered.push(readText(payload));
 });
 await new Promise((resolve) => setTimeout(resolve, 1_000));
 
-await chat.publish({
-  payload: new TextEncoder().encode(JSON.stringify({ hello: "world" })),
-});
+await chat.publish({ payload: jsonPayload({ hello: "world" }) });
 // Resolution means the local socket accepted the bytes — never a receipt.
 
 for (let waited = 0; delivered.length === 0 && waited < 15_000; waited += 250) {

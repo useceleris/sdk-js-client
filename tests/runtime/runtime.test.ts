@@ -22,6 +22,11 @@ const expectedExports = [
   "ProtocolError",
   "Segment",
   "createClient",
+  "createPayloadCodec",
+  "jsonPayload",
+  "readJson",
+  "readText",
+  "textPayload",
 ];
 const expectedCodec = JSON.parse(
   JSON.stringify(

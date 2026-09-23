@@ -267,10 +267,12 @@ describe("delivery and dedup", () => {
     const lobbyMessages: string[] = [];
     channel
       .segment("chat")
-      .onMessage((message) => chatMessages.push(message.messageId));
+      .onMessage((_payload, metadata) => chatMessages.push(metadata.messageId));
     channel
       .segment()
-      .onMessage((message) => lobbyMessages.push(message.messageId));
+      .onMessage((_payload, metadata) =>
+        lobbyMessages.push(metadata.messageId),
+      );
 
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi"));
     sockets.at(-1)!.receive(messageFrame("default", "id-2", "yo"));
@@ -283,8 +285,12 @@ describe("delivery and dedup", () => {
   it("delivers to every listener across proxy instances and preserves fields", async () => {
     const { channel } = await establish();
     const seen: unknown[] = [];
-    channel.segment("chat").onMessage((message) => seen.push(message));
-    channel.segment("chat").onMessage((message) => seen.push(message));
+    channel
+      .segment("chat")
+      .onMessage((payload, metadata) => seen.push({ payload, ...metadata }));
+    channel
+      .segment("chat")
+      .onMessage((payload, metadata) => seen.push({ payload, ...metadata }));
 
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi"));
     expect(seen).toHaveLength(2);
@@ -304,7 +310,7 @@ describe("delivery and dedup", () => {
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi"));
     channel
       .segment("chat")
-      .onMessage((message) => delivered.push(message.messageId));
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi"));
     sockets.at(-1)!.receive(messageFrame("chat", "id-2", "hi"));
     sockets.at(-1)!.receive(messageFrame("chat", "id-2", "hi"));
@@ -317,7 +323,7 @@ describe("delivery and dedup", () => {
     const delivered: string[] = [];
     channel
       .segment("chat")
-      .onMessage((message) => delivered.push(message.messageId));
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
 
     sockets.at(-1)!.receive(messageFrame("chat", "id-0", "x"));
     for (let index = 1; index <= 1024; index += 1) {
@@ -334,7 +340,7 @@ describe("delivery and dedup", () => {
     const delivered: string[] = [];
     setup.channel
       .segment("chat")
-      .onMessage((message) => delivered.push(message.messageId));
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
     setup.channel.segment("chat").subscribe();
 
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
@@ -351,7 +357,7 @@ describe("delivery and dedup", () => {
     const redelivered: string[] = [];
     fresh.channel
       .segment("chat")
-      .onMessage((message) => redelivered.push(message.messageId));
+      .onMessage((_payload, metadata) => redelivered.push(metadata.messageId));
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
     expect(redelivered).toEqual(["id-1"]);
   });
@@ -363,7 +369,7 @@ describe("delivery and dedup", () => {
     channel.events().onError((error) => errors.push(error));
     channel
       .segment("chat")
-      .onMessage((message) => delivered.push(message.messageId));
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
 
     sockets.at(-1)!.receive(messageFrame("chat", null, "x"));
 
@@ -385,7 +391,7 @@ describe("delivery and dedup", () => {
     channel.events().onError((error) => errors.push(error));
     channel
       .segment("chat")
-      .onMessage((message) => delivered.push(message.messageId));
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
 
     // The server greets every connect with untagged prose notices.
     sockets
@@ -413,7 +419,7 @@ describe("delivery and dedup", () => {
     channel.events().onError((error) => errors.push(error));
     channel
       .segment("chat")
-      .onMessage((message) => delivered.push(message.messageId));
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
 
     // A denied publish resolves locally; the error arrives uncorrelated.
     await channel.segment("chat").publish({ payload: utf8("x") });
@@ -459,7 +465,7 @@ describe("delivery and dedup", () => {
     const delivered: string[] = [];
     channel
       .segment("chat")
-      .onMessage((message) => delivered.push(message.messageId));
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
 
     const first = "@MSG\n$4\nuser\n$4\nchat\n$4\nal-1\n:1\n$1\na\n";
     const second = "@MSG\n$4\nuser\n$4\nchat\n$4\nal-2\n:2\n$1\nb\n";

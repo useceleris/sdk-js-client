@@ -3,7 +3,7 @@ import {
   Client,
   type Channel,
   type ChannelError,
-  type Message,
+  type MessageMetadata,
   type Segment,
   type ServerNotice,
 } from "../../../src/index";
@@ -66,14 +66,22 @@ export function waitFor<T>(
   });
 } // end function waitFor
 
+// The listener yields (payload, metadata); tests read one object.
+export type DeliveredMessage = MessageMetadata & {
+  readonly payload: Uint8Array;
+};
+
 export function nextMessage(
   segment: Segment,
-  predicate: (message: Message) => boolean,
+  predicate: (message: DeliveredMessage) => boolean,
   description = "a message delivery",
   timeoutMs = 15_000,
-): Promise<Message> {
-  return waitFor<Message>(
-    (deliver) => segment.onMessage(deliver),
+): Promise<DeliveredMessage> {
+  return waitFor<DeliveredMessage>(
+    (deliver) =>
+      segment.onMessage((payload, metadata) =>
+        deliver({ payload, ...metadata }),
+      ),
     predicate,
     timeoutMs,
     description,

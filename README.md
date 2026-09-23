@@ -10,7 +10,6 @@ Realtime client for Celeris channels: connection lifecycle with automatic recove
 import { createClient } from "@useceleris/client";
 
 const client = createClient({
-  baseUrl: "wss://realtime.example.com",
   // A trusted server signs short-lived opaque credentials; the browser
   // fetches them from YOUR authenticated endpoint. Never bundle
   // @useceleris/server or a signing secret into client code.
@@ -31,13 +30,15 @@ const client = createClient({
 
 const channel = client.channel("room-42");
 const chat = channel.segment("chat");
-chat.onMessage((message) => {
-  console.log(message.messageId, new TextDecoder().decode(message.payload));
+chat.onMessage((payload, metadata) => {
+  console.log(metadata.messageId, readText(payload));
 });
 chat.subscribe();
 await channel.connect();
 await chat.publish({ payload: new TextEncoder().encode("hello") });
 ```
+
+The endpoint is built in; pass `baseUrl` only for a local or self-hosted stack. Payloads are opaque bytes: `textPayload`/`jsonPayload` and `readText`/`readJson` cover the common cases, and `createPayloadCodec` wraps any other serializer (protobuf, MessagePack, CBOR) without the package depending on one.
 
 Full walkthroughs — lifecycle events, presence, permissions, error handling — live in [EXAMPLES.md](EXAMPLES.md); runnable variants in [examples/](examples) are executed against packed artifacts and a real Celeris stack by the qualification suites.
 
@@ -61,7 +62,7 @@ Full walkthroughs — lifecycle events, presence, permissions, error handling �
 | Reconnect        | 10 retries, full jitter ≤30 s, reset after 60 s  |
 | Dedup window     | 1024 message ids per channel                     |
 
-`Message.timestamp` and presence metadata are `bigint` — `JSON.stringify` needs an explicit replacer; the documented convention is decimal strings (`value.toString()`).
+`MessageMetadata.timestamp` and presence metadata are `bigint` — `JSON.stringify` needs an explicit replacer; the documented convention is decimal strings (`value.toString()`).
 
 ## Runtime support
 

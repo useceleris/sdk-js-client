@@ -105,7 +105,7 @@ describe("recovery restoration", () => {
     setup.channel.segment("chat").subscribe();
     setup.channel
       .segment("chat")
-      .onMessage((message) => delivered.push(message.messageId));
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
 
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "a"));
     sockets.at(-1)!.receive(messageFrame("chat", "id-2", "b"));

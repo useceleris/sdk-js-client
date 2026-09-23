@@ -1,10 +1,7 @@
-import type { Message, PresencePage, Subscription } from "./channel";
+import type { MessageListener, PresencePage, Subscription } from "./channel";
 
 export type SegmentDelegates = {
-  addMessageListener(
-    segmentId: string,
-    listener: (message: Message) => void,
-  ): () => void;
+  addMessageListener(segmentId: string, listener: MessageListener): () => void;
   addMessageInterest(segmentId: string): Subscription;
   addPresenceInterest(segmentId: string): Subscription;
   publishToSegment(
@@ -38,7 +35,7 @@ export class Segment {
     return this.delegates.addMessageInterest(this.segmentId);
   } // end method subscribe
 
-  onMessage(listener: (message: Message) => void): () => void {
+  onMessage(listener: MessageListener): () => void {
     return this.delegates.addMessageListener(this.segmentId, listener);
   } // end method onMessage
 
