@@ -47,6 +47,19 @@ function presenceResponseFrame(options: {
   ).buffer;
 }
 
+function presenceNotifyFrame(
+  segmentId: string,
+  tokenReference: string,
+  connectionId: string,
+  joined: boolean,
+  timestamp = 123,
+): ArrayBufferLike {
+  return utf8(
+    `@PRES_NOTIFY\n+${segmentId}\n+${tokenReference}\n+${connectionId}\n` +
+      `:${joined ? 1 : 0}\n:${timestamp}\n`,
+  ).buffer;
+}
+
 function sentFrames(): string[] {
   return sockets
     .at(-1)!
@@ -451,6 +464,91 @@ describe("notices", () => {
     channel.events().onNotice(() => order.push("after"));
 
     sockets.at(-1)!.receive(utf8("@SERVER_MSG\n:1\n$0\n\n").buffer);
+    expect(order).toEqual(["after"]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ message: "Listener callback failed." });
+    expect(channel.state).toBe("connected");
+  });
+
+  it("delivers presence notifications to their own segment only", async () => {
+    const { channel } = await establish();
+    const chat: unknown[] = [];
+    const lobby: unknown[] = [];
+    channel.segment("chat").onPresence((event) => chat.push(event));
+    channel.segment("lobby").onPresence((event) => lobby.push(event));
+
+    sockets
+      .at(-1)!
+      .receive(presenceNotifyFrame("chat", "user", "connection-1", true, 7));
+    sockets
+      .at(-1)!
+      .receive(presenceNotifyFrame("chat", "user", "connection-1", false, 9));
+
+    expect(lobby).toEqual([]);
+    expect(chat).toEqual([
+      {
+        segmentId: "chat",
+        tokenReference: "user",
+        connectionId: "connection-1",
+        joined: true,
+        timestamp: 7n,
+      },
+      {
+        segmentId: "chat",
+        tokenReference: "user",
+        connectionId: "connection-1",
+        joined: false,
+        timestamp: 9n,
+      },
+    ]);
+  });
+
+  it("shares one presence listener set across handler instances", async () => {
+    const { channel } = await establish();
+    const seen: string[] = [];
+    const stopFirst = channel
+      .segment("chat")
+      .onPresence(() => seen.push("first"));
+    channel.segment("chat").onPresence(() => seen.push("second"));
+
+    sockets
+      .at(-1)!
+      .receive(presenceNotifyFrame("chat", "user", "connection-1", true));
+    stopFirst();
+    sockets
+      .at(-1)!
+      .receive(presenceNotifyFrame("chat", "user", "connection-1", false));
+
+    expect(seen).toEqual(["first", "second", "second"]);
+  });
+
+  it("ignores a notification for a segment with no listener", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    channel.events().onError((error) => errors.push(error));
+
+    sockets
+      .at(-1)!
+      .receive(presenceNotifyFrame("unwatched", "user", "connection-1", true));
+
+    expect(errors).toEqual([]);
+    expect(channel.state).toBe("connected");
+  });
+
+  it("contains throwing presence listeners", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    const order: string[] = [];
+    channel.events().onError((error) => errors.push(error));
+    channel.segment("chat").onPresence(() => {
+      throw new Error("presence-secret");
+    });
+    channel.segment("chat").onPresence(() => order.push("after"));
+
+    sockets
+      .at(-1)!
+      .receive(presenceNotifyFrame("chat", "user", "connection-1", true));
+
     expect(order).toEqual(["after"]);
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ message: "Listener callback failed." });

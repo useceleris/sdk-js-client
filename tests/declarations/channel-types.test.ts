@@ -7,6 +7,8 @@ import type {
   MessageMetadata,
   MessageListener,
   PresenceConnection,
+  PresenceEvent,
+  PresenceListener,
   PresencePage,
   RecoveryEvent,
   ServerNotice,
@@ -96,6 +98,22 @@ describe("channel type contracts", () => {
       readonly timestamp: bigint;
       readonly payload: Uint8Array;
     }>();
+
+    expectTypeOf<PresenceEvent>().toEqualTypeOf<{
+      readonly segmentId: string;
+      readonly tokenReference: string;
+      readonly connectionId: string;
+      readonly joined: boolean;
+      readonly timestamp: bigint;
+    }>();
+
+    expectTypeOf<PresenceListener>().toEqualTypeOf<
+      (event: PresenceEvent) => void
+    >();
+
+    expectTypeOf<Segment["onPresence"]>().toEqualTypeOf<
+      (listener: PresenceListener) => () => void
+    >();
 
     expectTypeOf<PresenceConnection>().toEqualTypeOf<{
       readonly tokenReference: string;

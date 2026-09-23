@@ -205,6 +205,48 @@ export const decodingVectors: {
     },
   },
   {
+    name: "presence notification join",
+    bytes: utf8("@PRES_NOTIFY\n+chat\n+user\n+connection\n:1\n:123\n"),
+    expected: {
+      command: "PRES_NOTIFY",
+      segmentId: "chat",
+      tokenReference: "user",
+      connectionId: "connection",
+      joined: true,
+      timestamp: 123n,
+    },
+  },
+  {
+    name: "presence notification leave",
+    bytes: utf8("@PRES_NOTIFY\n+chat\n+user\n+connection\n:0\n:124\n"),
+    expected: {
+      command: "PRES_NOTIFY",
+      segmentId: "chat",
+      tokenReference: "user",
+      connectionId: "connection",
+      joined: false,
+      timestamp: 124n,
+    },
+  },
+  {
+    // DECODE-01: a command this version does not know is skipped, not
+    // rejected, so a newer server cannot break a deployed client.
+    name: "unknown command ignored",
+    bytes: utf8("@FUTURE_COMMAND\n+a\n:1\n"),
+    expected: { command: "IGNORED" },
+  },
+  {
+    name: "unknown command ignored in tail position",
+    bytes: utf8("*2\n@SERVER_MSG\n:1\n$0\n\n@FUTURE_COMMAND\n+a\n"),
+    expected: {
+      command: "ARRAY",
+      messages: [
+        { command: "SERVER_MSG", timestamp: 1n, payload: new Uint8Array() },
+        { command: "IGNORED" },
+      ],
+    },
+  },
+  {
     name: "presence past last page",
     bytes: utf8("@PRES_LIST_RESPONSE\n+chat\n:1\n:25\n:2\n:26\n:1\n*0\n"),
     expected: {
@@ -263,9 +305,10 @@ export const malformedVectors = [
   "*-1\n",
   "*4096\n",
   "*9223372036854775808\n",
-  "@UNKNOWN\n",
-  "@NODE_PUB\n",
-  "@SUB\n+a\n",
+  // An unknown command is skippable only when it runs to the end of the
+  // transport message; anywhere else its boundary is unknowable (DECODE-01).
+  "*2\n@FUTURE_COMMAND\n+a\n@SERVER_MSG\n:1\n$0\n\n",
+  "*2\n*1\n@FUTURE_COMMAND\n+a\n@SERVER_MSG\n:1\n$0\n\n",
   "+hello\n",
   ":1\n",
   "$-1\n",

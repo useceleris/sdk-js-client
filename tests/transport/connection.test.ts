@@ -297,16 +297,30 @@ describe("open connection", () => {
   });
 
   it.each(["text", new Blob(), new Uint8Array([1])])(
-    "rejects unsupported message data %#",
+    "drops unsupported message data without closing %#",
     async (data) => {
       const { options, socket } = await connect();
       socket.receive(data);
       expect(options.onError).toHaveBeenCalledWith(
         expect.objectContaining({ code: "ProtocolError", field: "message" }),
       );
-      expect(socket.close).toHaveBeenCalledTimes(1);
+      // DECODE-01: the frame is dropped, the connection is not.
+      expect(socket.close).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps delivering messages after an undecodable frame", async () => {
+    const { options, socket } = await connect();
+
+    socket.receive(utf8("not a frame").buffer);
+    socket.receive(utf8("@SERVER_MSG\n:1\n$2\nhi\n").buffer);
+
+    expect(options.onError).toHaveBeenCalledTimes(1);
+    expect(options.onMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "SERVER_MSG" }),
+    );
+    expect(socket.close).not.toHaveBeenCalled();
+  });
 
   it("reports malformed and oversized binary messages", async () => {
     for (const data of [utf8("invalid").buffer, new ArrayBuffer(1_048_577)]) {

@@ -57,8 +57,9 @@ events.onRecovery((recovery) => {
 });
 
 events.onError((error) => {
-  // Async failures: socket errors, protocol violations, and server
-  // error frames (which do NOT close the connection).
+  // Async failures: socket errors, server error frames, and frames this
+  // version could not decode. Only a socket error costs the connection —
+  // an undecodable frame is dropped on its own.
   console.error(error.code, error.message);
 });
 
@@ -156,8 +157,19 @@ const watching = chat.subscribePresence();
 // never emits for "default".
 const lobbyPresence = channel.segment().subscribePresence();
 
-// Join/leave notices arrive as raw prose SERVER_MSG at the CHANNEL level —
-// the wire does not tag them with a segment. Never parse prose into events.
+// Join and leave arrive as typed, segment-tagged events while a presence
+// interest is held.
+const stopPresence = chat.onPresence((event) => {
+  console.log(
+    event.joined ? "joined" : "left",
+    event.tokenReference,
+    event.connectionId,
+    event.timestamp,
+  );
+});
+
+// Acks and refusals are still untagged prose at the CHANNEL level. Never
+// parse prose into events.
 const stopNotices = channel.events().onNotice((notice) => {
   console.log("notice:", new TextDecoder().decode(notice.payload));
 });
@@ -171,8 +183,11 @@ for (const connection of page.connections) {
 
 watching.cancel();
 lobbyPresence.cancel(); // PRES_UNSUB; the server accepts this one
+stopPresence();
 stopNotices();
 ```
+
+Two things to know before building on the event stream. It is **node-local**: the server fans notifications out only to watchers connected to the same node, while `presenceList()` aggregates across the cluster — so in a multi-node deployment a watcher will not see a joiner on another node, and reconciling events against a snapshot drifts. And suppression is per connection, not per token: your own other tabs appear as joins and leaves.
 
 ## Multiple connections
 
@@ -310,4 +325,4 @@ void serialized;
 
 ## What this API will never do
 
-No offline queue, no automatic resend of publishes, no server receipts or acks (the protocol has none — server responses are untagged prose), no durable history, no global ordering, no typed presence events, no signing in the browser.
+No offline queue, no automatic resend of publishes, no server receipts or acks (the protocol has none — acks and refusals are untagged prose), no durable history, no global ordering, no signing in the browser. Presence join and leave _are_ typed, because the wire frame carrying them is.

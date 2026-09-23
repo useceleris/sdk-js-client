@@ -46,7 +46,7 @@ Full walkthroughs — lifecycle events, presence, permissions, error handling �
 
 - `publish()` resolves when the local socket accepted the bytes — there is **no server receipt or ack** anywhere in the protocol; server responses are untagged prose notices.
 - Lost connections retry automatically (10 attempts, full jitter, fresh credentials, replay lookback). Recovery restores your subscriptions and reports **possible gaps and duplicates**; a bounded 1024-id window deduplicates replayed messages, duplicates beyond it remain possible.
-- No offline queue, no automatic resend, no durable history, no global ordering, no typed presence events.
+- No offline queue, no automatic resend, no durable history, no global ordering.
 - Permission denials arrive uncorrelated through `events().onError` with code `"Permission"`; a denied publish still resolves locally.
 - Publishing to a segment joins it server-side; subscribing to presence also joins it for messages.
 

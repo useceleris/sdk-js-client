@@ -4,6 +4,7 @@ import {
   type Channel,
   type ChannelError,
   type MessageMetadata,
+  type PresenceEvent,
   type Segment,
   type ServerNotice,
 } from "../../../src/index";
@@ -101,6 +102,20 @@ export function nextNotice(
     description,
   );
 } // end function nextNotice
+
+export function nextPresence(
+  segment: Segment,
+  predicate: (event: PresenceEvent) => boolean,
+  description = "a presence notification",
+  timeoutMs = 15_000,
+): Promise<PresenceEvent> {
+  return waitFor<PresenceEvent>(
+    (deliver) => segment.onPresence(deliver),
+    predicate,
+    timeoutMs,
+    description,
+  );
+} // end function nextPresence
 
 export function nextError(
   channel: Channel,

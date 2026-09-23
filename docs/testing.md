@@ -21,7 +21,7 @@ This inventory covers the implemented C0–C9 package: reconnect scheduler, segm
 - MSG, SERVER_MSG, PRES_LIST_RESPONSE, standalone errors and empty/nested response arrays.
 - Simple/bulk fields, LF/CRLF, absent versus empty values, Unicode/BOM preservation and exact signed-64 timestamps.
 - Presence connection entries and pagination metadata, including empty results and pages beyond the last result.
-- Raw notice/error content and arbitrary binary payloads; no interpretation of notice prose.
+- Raw notice/error content and arbitrary binary payloads; no interpretation of notice prose. Presence join/leave is decoded from the typed `PRES_NOTIFY` frame instead (PRES-01), and an unknown command is skipped rather than rejected (DECODE-01).
 - Invalid UTF-8: isolated continuation, overlong encoding, encoded surrogate, truncated multibyte sequence and code point beyond Unicode. The same bytes remain valid in opaque payloads.
 - Invalid markers/commands, malformed lengths, numeric overflow, missing fields, every truncation of a fixed message, invalid terminators, ambiguous nested errors and trailing bytes.
 - Exact 1 MiB input bound, depth 32, 4096-fragment budget and oversized declared allocations.

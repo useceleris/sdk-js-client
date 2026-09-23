@@ -18,10 +18,10 @@ it.each([
     offset: 3,
   },
   {
-    wire: "@UNKNOWN\n",
-    message: "Unsupported server command.",
+    wire: "*2\n@UNKNOWN\n@SERVER_MSG\n:1\n$0\n\n",
+    message: "Unknown command inside array has ambiguous boundaries.",
     field: "command",
-    offset: 0,
+    offset: 3,
   },
   {
     wire: "@SERVER_MSG\n:abc\n",

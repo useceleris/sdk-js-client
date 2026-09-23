@@ -49,6 +49,19 @@ export type PresencePage = {
   readonly connections: readonly PresenceConnection[];
 };
 
+// One connection joining or leaving one segment (PRES-01). Delivered only
+// where subscribePresence() was called, because the server fans these out
+// to presence subscribers alone.
+export type PresenceEvent = {
+  readonly segmentId: string;
+  readonly tokenReference: string;
+  readonly connectionId: string;
+  readonly joined: boolean; // false = left
+  readonly timestamp: bigint;
+};
+
+export type PresenceListener = (event: PresenceEvent) => void;
+
 export type ChannelState =
   | "idle"
   | "connecting"
@@ -166,6 +179,10 @@ export class Channel {
     string,
     ListenerSet<Parameters<MessageListener>>
   >();
+  private readonly presenceListeners = new Map<
+    string,
+    ListenerSet<[PresenceEvent]>
+  >();
   private readonly messageInterests = new Map<string, number>();
   private readonly presenceInterests = new Map<string, number>();
   private pendingPresenceQuery:
@@ -202,6 +219,8 @@ export class Channel {
   private readonly segmentDelegates: SegmentDelegates = {
     addMessageListener: (segmentId, listener) =>
       this.addMessageListener(segmentId, listener),
+    addPresenceListener: (segmentId, listener) =>
+      this.addPresenceListener(segmentId, listener),
     addMessageInterest: (segmentId) => this.addMessageInterest(segmentId),
     addPresenceInterest: (segmentId) => this.addPresenceInterest(segmentId),
     publishToSegment: (segmentId, options) =>
@@ -384,6 +403,21 @@ export class Channel {
 
     return listeners.add(listener);
   } // end method addMessageListener
+
+  private addPresenceListener(
+    segmentId: string,
+    listener: PresenceListener,
+  ): () => void {
+    let listeners = this.presenceListeners.get(segmentId);
+    if (!listeners) {
+      listeners = new ListenerSet<[PresenceEvent]>(() =>
+        this.reportListenerFailure(),
+      );
+      this.presenceListeners.set(segmentId, listeners);
+    }
+
+    return listeners.add(listener);
+  } // end method addPresenceListener
 
   private addMessageInterest(segmentId: string): Subscription {
     return this.addInterest(
@@ -637,6 +671,9 @@ export class Channel {
           payload: message.payload,
         });
         return;
+      case "PRES_NOTIFY":
+        this.deliverPresence(message);
+        return;
       case "PRES_LIST_RESPONSE":
         this.receivePresenceResponse(message);
         return;
@@ -676,10 +713,11 @@ export class Channel {
     message: Extract<ServerMessage, { command: "MSG" }>,
   ): void {
     // REV-01, verified against the live server in C8: every MSG carries a
-    // server-assigned id. A missing id is protocol corruption.
+    // server-assigned id. A missing id leaves the message undeliverable —
+    // it cannot be deduplicated — so it is dropped and reported, without
+    // taking the connection down with it (DECODE-01).
     if (message.messageId === null) {
-      this.detachHandle()?.close();
-      this.failTerminal(
+      this.emitError(
         new ProtocolError(
           "Server message is missing its identifier.",
           "messageId",
@@ -703,6 +741,21 @@ export class Channel {
     });
   } // end method deliverMessage
 
+  private deliverPresence(
+    event: Extract<ServerMessage, { command: "PRES_NOTIFY" }>,
+  ): void {
+    const listeners = this.presenceListeners.get(event.segmentId);
+    if (!listeners) return;
+
+    listeners.dispatch({
+      segmentId: event.segmentId,
+      tokenReference: event.tokenReference,
+      connectionId: event.connectionId,
+      joined: event.joined,
+      timestamp: event.timestamp,
+    });
+  } // end method deliverPresence
+
   private receiveSocketClose(attemptGeneration: number): void {
     if (this.currentState === "closing") {
       this.finishClose();
@@ -724,10 +777,11 @@ export class Channel {
     if (this.currentState !== "connected") return;
 
     if (error instanceof ProtocolError) {
-      // The connection layer closes the socket after reporting an error, so
-      // only the stale reference is dropped here — no second close.
-      this.handle = undefined;
-      this.failTerminal(error);
+      // A frame that could not be decoded was dropped by the connection
+      // layer, which left the socket open. Report it and stay connected:
+      // decoding never spans frames, so the next one is unaffected
+      // (DECODE-01).
+      this.emitError(error);
       return;
     }
     this.enterReconnecting();

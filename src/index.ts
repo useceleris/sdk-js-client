@@ -9,6 +9,8 @@ export {
   type ServerNotice,
   type PresencePage,
   type PresenceConnection,
+  type PresenceEvent,
+  type PresenceListener,
   type Subscription,
   type RecoveryEvent,
 } from "./channel";

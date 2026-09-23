@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   connectedChannel,
   nextMessage,
-  nextNotice,
+  nextPresence,
   uniqueChannelReference,
 } from "./helpers/environment";
 
@@ -12,23 +12,40 @@ const settle = (ms = 1_500) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("celeris presence", () => {
-  it("delivers raw join notices to presence watchers", async () => {
+  it("delivers typed join and leave notifications to presence watchers", async () => {
     const reference = uniqueChannelReference("watch");
     const watcher = await connectedChannel(reference);
-    watcher.segment("room").subscribePresence();
+    const watched = watcher.segment("room");
+    watched.subscribePresence();
     await settle();
 
     const actor = await connectedChannel(reference);
     actor.segment("room").subscribe();
 
-    const notice = await nextNotice(
-      watcher,
-      (received) => text(received.payload).includes('joined segment "room"'),
-      "a raw join notice",
+    const join = await nextPresence(
+      watched,
+      (event) => event.joined,
+      "a typed join notification",
     );
-    expect(text(notice.payload)).toContain("connection id:");
+    expect(join.segmentId).toBe("room");
+    expect(join.tokenReference.length).toBeGreaterThan(0);
+    expect(join.connectionId.length).toBeGreaterThan(0);
+    expect(typeof join.timestamp).toBe("bigint");
+    expect(join.timestamp > 0n).toBe(true);
 
+    // The same connection leaving produces the mirror event. The waiter is
+    // registered before the close, because the notification can arrive
+    // while close() is still settling.
+    const leaving = nextPresence(
+      watched,
+      (event) => !event.joined && event.connectionId === join.connectionId,
+      "a typed leave notification",
+    );
     await actor.close();
+    const leave = await leaving;
+    expect(leave.segmentId).toBe("room");
+    expect(leave.tokenReference).toBe(join.tokenReference);
+
     await watcher.close();
   });
 
@@ -72,8 +89,8 @@ describe("celeris presence", () => {
     watching.cancel();
     await settle();
 
-    const notices: string[] = [];
-    watcher.events().onNotice((notice) => notices.push(text(notice.payload)));
+    const events: unknown[] = [];
+    watcher.segment("room").onPresence((event) => events.push(event));
     const actor = await connectedChannel(reference);
     actor.segment("room").subscribe();
     await actor.segment("room").publish({ payload: utf8("still-member") });
@@ -85,9 +102,7 @@ describe("celeris presence", () => {
       (message) => text(message.payload) === "still-member",
       "delivery proving persistent membership",
     );
-    expect(notices.some((entry) => entry.includes("joined segment"))).toBe(
-      false,
-    );
+    expect(events).toEqual([]);
 
     await actor.close();
     await watcher.close();

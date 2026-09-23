@@ -233,23 +233,31 @@ function createHandle(
     socket.removeEventListener("message", receiveMessage);
     socket.removeEventListener("error", receiveError);
   };
-  const reportError = (error: ConnectionError | ProtocolError): void => {
+  const report = (error: ConnectionError | ProtocolError): void => {
     try {
       options.onError?.(error);
     } catch {
       // User callbacks cannot escape native event dispatch.
     }
+  };
+  const reportError = (error: ConnectionError | ProtocolError): void => {
+    report(error);
     handle.close();
   };
+  // A decoder is built per transport message over that message's own bytes,
+  // so nothing spans frames and a bad frame cannot desynchronize the next
+  // one. Dropping it costs exactly that frame, which is why these report
+  // without closing the socket (DECODE-01).
+  const reportFrameError = (error: ProtocolError): void => report(error);
   const receiveMessage = (event: MessageEvent): void => {
     if (!(event.data instanceof ArrayBuffer)) {
-      reportError(
+      reportFrameError(
         new ProtocolError("Expected a binary WebSocket message.", "message", 0),
       );
       return;
     }
     if (event.data.byteLength > maximumMessageBytes) {
-      reportError(
+      reportFrameError(
         new ProtocolError("WebSocket message exceeds 1 MiB.", "message", 0),
       );
       return;
@@ -259,7 +267,7 @@ function createHandle(
     try {
       message = new MessageDecoder(new Uint8Array(event.data)).decode();
     } catch (error) {
-      reportError(
+      reportFrameError(
         error instanceof ProtocolError
           ? error
           : new ProtocolError("Message decoding failed.", "message", 0),

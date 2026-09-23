@@ -102,6 +102,9 @@ export class Segment {
     signal?: AbortSignal;
   }): Promise<void>; // resolves on local acceptance only; server auto-joins the segment
   subscribePresence(): Subscription; // PRES_SUB; server also joins the segment for messages
+  // PRES-01: typed join/leave for THIS segment, from the segment-tagged
+  // PRES_NOTIFY frame. Delivered only while a presence interest is held.
+  onPresence(listener: (event: PresenceEvent) => void): () => void;
   presenceList(options: {
     page: number; // 1..2147483647, reject not clamp
     perPage: number; // 1..100, reject not clamp
@@ -119,7 +122,7 @@ export interface ChannelEventHandler {
   // and returns its idempotent dispose function.
   onStateChange(listener: (state: ChannelState) => void): () => void;
   onRecovery(listener: (event: RecoveryEvent) => void): () => void;
-  onNotice(listener: (notice: ServerNotice) => void): () => void; // raw SERVER_MSG, incl. presence prose
+  onNotice(listener: (notice: ServerNotice) => void): () => void; // raw SERVER_MSG (acks, refusals)
   onError(listener: (error: ChannelError) => void): () => void; // async terminal failures
   // ChannelError = ConfigurationError | ConnectionError | ProtocolError.
   // The three error classes and ConnectionErrorCode are public exports so
@@ -154,6 +157,15 @@ export type PresenceConnection = {
   readonly connectionId: string;
   readonly timestamp: bigint;
 };
+export type PresenceEvent = {
+  readonly segmentId: string;
+  readonly tokenReference: string;
+  readonly connectionId: string;
+  readonly joined: boolean; // false = left
+  readonly timestamp: bigint;
+};
+export type PresenceListener = (event: PresenceEvent) => void;
+
 export type RecoveryEvent = {
   readonly retryIndex: number;
   readonly possibleGaps: true;
@@ -182,7 +194,7 @@ export function createPayloadCodec<T>(
 export type { Credentials, CredentialRequest, CredentialProvider }; // shapes above, exported from C4
 ```
 
-Operation errors reject their Promises. Asynchronous terminal failures (native socket error, protocol violation, callback containment) surface through `events().onError` and drive the state to `failed` via `onStateChange`; nothing is silently dropped.
+Operation errors reject their Promises. Asynchronous terminal failures (native socket error, callback containment) surface through `events().onError` and drive the state to `failed` via `onStateChange`; nothing is silently dropped. A frame that cannot be decoded is **not** such a failure — it is reported through the same hook and the channel stays connected (DECODE-01).
 
 **REV-01 (2026-09-20; VERIFIED live in C8):** the server always assigns a MSG id — corroborated by server source (omitted ids replaced with `msg_{node}_{ulid}` before fanout) and verified against the running e2e stack: every delivered, replayed and cross-node message carried a `msg_*` id. The client owns idempotent delivery: public `MessageMetadata.messageId` is non-null, and deliveries are deduplicated by id within a bounded, non-configurable per-channel window (a 1024-entry insertion-order id set) before fanout; ids are recorded even when no listener exists. The window survives reconnect and clears on each explicit `connect()`; C7 relies on it to absorb replay duplicates, and duplicates beyond the window remain possible and stay declared in the recovery event. The lenient interim is retired: a MSG whose decoded id is null is protocol corruption at the delivery layer (`ProtocolError`, terminal). This supersedes the earlier "no implicit deduplication" wording below for message delivery; ordering is still preserved and no durable cursor or global ordering claim follows. Spec revision remains pending.
 
@@ -196,6 +208,10 @@ C7 decisions: known server error names map to codes at the router — `Permissio
 
 **MSG-01 (2026-09-23, C11):** `onMessage` hands the listener the payload first and the remaining fields second, as `MessageMetadata`. The exported `Message` type is replaced by `MessageMetadata` (the same fields minus `payload`) plus the exported `MessageListener` alias. This separates content from envelope so the HELP-01 helpers compose directly with a listener, and it keeps every field reachable rather than forcing destructuring. Dedup, ordering and containment behaviour are untouched. This is a breaking change to the C5 listener shape, acceptable only because nothing is published yet.
 
+**PRES-01 (2026-09-23, C12):** presence join and leave are delivered as a typed per-segment event, `Segment.onPresence`, carrying `{ segmentId, tokenReference, connectionId, joined, timestamp }`. This retires the standing promise that the SDK would never emit typed presence events. That promise was not a principle — it was a consequence of the wire, where join and leave existed only as untagged prose on `SERVER_MSG` that could not be routed to a segment and could only be recognized by matching English sentences. The server replaced that prose with `PRES_NOTIFY`, which is segment-tagged and fully structured, so the reason is gone while the rule it served (never parse prose into events) is untouched and still binding for the acks and refusals that remain prose. The listener lives on `Segment`, not `ChannelEventHandler`: the frame is segment-tagged, presence is a facet of a joined segment (SEG-01), and the four-method limit on the channel handler stands. The event flag is narrowed from the wire's `:1`/`:0` to `joined: boolean` — a flag, not the raw bigint metadata that presence pages pass through unconverted. Events arrive only while a presence interest is held, because the server fans them out to presence subscribers alone; the SDK adds no gate of its own. Rejected: re-emitting through `onNotice`, which would have preserved the letter of the promise while discarding the structure the new frame exists to carry.
+
+**DECODE-01 (2026-09-23, C12):** no decoding failure closes the connection. An unrecognized command is skipped and ignored; every other frame-level failure drops that one frame and is reported through `events().onError` with the channel still `connected`. This is safe rather than merely lenient: a decoder is constructed per transport message over that message's own bytes, so nothing spans frames and a malformed frame cannot desynchronize the next one — dropping it costs exactly one frame. An unknown command is skippable only where its boundary is knowable, which is the same rule errors already follow (D-002): running to the end of the transport message, either alone or as the final element of every enclosing array. Elsewhere it remains a `ProtocolError`, which is now non-fatal like any other. This supersedes REV-01's clause making a null-id `MSG` terminal — that message is undeliverable because it cannot be deduplicated, which is the message's problem and not the connection's — and it retires the policy that protocol corruption does not retry, which becomes moot once there is nothing to retry. The motivation is recorded twice over: D-002 was this same shape of incident, where batched error frames were rejected and every permission denial killed the connection, and the server's `PRES_NOTIFY` rollout would otherwise have permanently killed every presence-subscribed client on its first join or leave, with no version negotiation existing by which a server could avoid it.
+
 Never exported: `openConnection`, `ConnectionHandle`, `MessageDecoder`, `encodeClientCommand`, `decodeServerMessage`, Zod schemas, `NODE_PUB`, any signing facility.
 
 ### Minimalism constraints (binding for C4–C7, and for every later surface change)
@@ -206,14 +222,14 @@ Never exported: `openConnection`, `ConnectionHandle`, `MessageDecoder`, `encodeC
 - No error hierarchy; only the code-union widening above.
 - No reconnect or limit knobs in `ClientOptions`. Shared-contract defaults (10 retries, full jitter, 64-command/1 MiB writer) are authoritative and non-configurable in v1. Only the two spec-marked-configurable timeouts are options.
 - No event framework: `ChannelEventHandler` has exactly four named `on*` methods. No generic `on(name, fn)`, no string event keys, no wildcard listeners, no once/prepend variants, no listener-count APIs. Dispatch is synchronous in registration order with contained listener exceptions.
-- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement or a recorded local decision (DEV-01, REV-01, SEG-01, HELP-01, ENDPOINT-01, MSG-01).
+- Prefer adding a method to an existing class over adding a class; prefer a documented pattern over a convenience export. Every new public identifier must trace to a specification requirement or a recorded local decision (DEV-01, REV-01, SEG-01, HELP-01, ENDPOINT-01, MSG-01, PRES-01, DECODE-01).
 
 ## Segment model (SEG-01; owner directive 2026-09-20, verified against celeris-realtime source)
 
 One channel connection is one WebSocket; every segment of that channel is multiplexed over it. Connecting automatically makes the connection a member of the default segment `"default"`, and the client tests for it by comparing that one identifier. **Corrected 2026-09-23:** this paragraph previously required a set-membership predicate rather than an equality check, which no longer described the shipped code — the 2026-09-21 simplification pass replaced a one-element `defaultSegments` set with a `defaultSegmentId` comparison. Re-reading the server settles it in favour of the equality check: `DEFAULT_SEGMENTS` is a compile-time constant holding exactly one live element (`&["default" /* "private" */]`), identical for every application, token and deployment — no configuration, claim or database row can widen it, and its history shows it shrinking from two entries to one rather than growing. Segment handlers are subscribers-and-proxies over the channel connection: many handler instances may point at the same channel, but each additional `Channel` is a separate WebSocket client. Server-source facts that bind the design:
 
 - The server mirrors this shape exactly: one socket plus a per-connection `HashMap<SegmentId, SegmentHandle>`, each joined segment served by its own listener task with an independent replay cursor. Replay applies per segment JOIN, not per connect — a late `subscribe()` on a live channel replays per the token's replay mode.
-- `MSG` always carries `segment_id`, so message demux to handlers is exact. `SERVER_MSG` and `-Err` carry no segment id — all acks, refusals and presence prose are unroutable and surface only channel-wide (`events().onNotice`/`onError`). There are no correlation ids; nothing gates on prose.
+- `MSG` and `PRES_NOTIFY` both carry `segment_id`, so message and presence demux to handlers is exact. `SERVER_MSG` and `-Err` carry no segment id — acks and refusals remain unroutable and surface only channel-wide (`events().onNotice`/`onError`). There are no correlation ids; nothing gates on prose. **Revised 2026-09-23:** join and leave were prose on `SERVER_MSG` until the server replaced them with the typed, segment-tagged `PRES_NOTIFY` frame (PRES-01).
 - `PUB` auto-joins the segment server-side: publishing from a handler makes the connection a member (visible in presence, and delivering messages when the token has read access) even with no local subscription. Documented, not hidden.
 - `PRES_SUB` force-joins the segment for messages too; `PRES_UNSUB` removes only the presence interest — message membership survives. Presence is a facet of a joined segment, not an independent subscription.
 - Segments are created lazily on first SUB/PUB/PRES_SUB and evaporate when the last member leaves and the backlog idles; UNSUB on an empty segment gets prose "does not exist". Segment names are nearly unconstrained server-side (nonempty UTF-8); the client keeps its stricter CR/LF/lone-surrogate rejection.
@@ -242,7 +258,7 @@ Inbound delivery is synchronous listener dispatch (DEV-01): decoded messages fan
 
 Presence queries are serialized, with a 10-second deadline and OperationInProgress for overlap. Match segment/page/perPage. Cancellation before submission releases the query slot; timeout/cancellation after submission retires that socket before another query and requests bounded recovery while preserving intent. No query retry. Unexpected replies remain unsolicited protocol events. SERVER_MSG is a channel-wide raw notice, not a typed join/leave event or receipt.
 
-Restore message interests then presence interests in registration order. Recovery permits 10 retries, full jitter in [0, min(30 seconds, 500 ms × 2^retryIndex)], beginning at index zero; reset after 60 seconds connected. Each attempt requests fresh credentials. Deterministic configuration/permission failures, protocol corruption and explicit close do not retry. Hidden browser handshake status stays unknown. Recovery reports possible gaps and duplicates; preserve arrival order with no durable cursor or global ordering claim. Message delivery is deduplicated by server-assigned id within the bounded REV-01 window; duplicates beyond it remain possible.
+Restore message interests then presence interests in registration order. Recovery permits 10 retries, full jitter in [0, min(30 seconds, 500 ms × 2^retryIndex)], beginning at index zero; reset after 60 seconds connected. Each attempt requests fresh credentials. Deterministic configuration/permission failures and explicit close do not retry; an undecodable frame has nothing to retry, because the connection is never lost (DECODE-01). Hidden browser handshake status stays unknown. Recovery reports possible gaps and duplicates; preserve arrival order with no durable cursor or global ordering claim. Message delivery is deduplicated by server-assigned id within the bounded REV-01 window; duplicates beyond it remain possible.
 
 C3 implements direct native WebSocket ownership and per-attempt credential acquisition. See [transport contract](transport.md). C4 owns channel state, the connection generation, and the reconnect scheduler with injectable monotonic clock, wall clock, and randomness; C7 restores interests over it.
 

@@ -165,16 +165,19 @@ describe("channel reconnect", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("does not retry protocol corruption on a connected socket", async () => {
+  it("stays connected through protocol corruption on a connected socket", async () => {
     const setup = await establish();
     const errors: unknown[] = [];
     setup.channel.events().onError((error) => errors.push(error));
 
     sockets.at(-1)!.receive("text");
 
-    expect(setup.channel.state).toBe("failed");
+    // DECODE-01: the bad frame is dropped and reported; there is nothing to
+    // retry because the connection was never lost.
+    expect(setup.channel.state).toBe("connected");
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ name: "ProtocolError" });
+    expect(sockets.at(-1)!.close).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 

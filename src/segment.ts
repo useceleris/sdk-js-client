@@ -1,7 +1,16 @@
-import type { MessageListener, PresencePage, Subscription } from "./channel";
+import type {
+  MessageListener,
+  PresenceListener,
+  PresencePage,
+  Subscription,
+} from "./channel";
 
 export type SegmentDelegates = {
   addMessageListener(segmentId: string, listener: MessageListener): () => void;
+  addPresenceListener(
+    segmentId: string,
+    listener: PresenceListener,
+  ): () => void;
   addMessageInterest(segmentId: string): Subscription;
   addPresenceInterest(segmentId: string): Subscription;
   publishToSegment(
@@ -50,6 +59,12 @@ export class Segment {
   subscribePresence(): Subscription {
     return this.delegates.addPresenceInterest(this.segmentId);
   } // end method subscribePresence
+
+  onPresence(listener: PresenceListener): () => void {
+    // Events arrive only while subscribePresence() is held: the server
+    // fans them out to presence subscribers alone (PRES-01).
+    return this.delegates.addPresenceListener(this.segmentId, listener);
+  } // end method onPresence
 
   presenceList(options: {
     readonly page: number;

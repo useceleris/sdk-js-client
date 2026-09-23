@@ -328,7 +328,7 @@ export class MessageDecoder {
       case "-".charCodeAt(0):
         return this.readErrorMessage(depth, tail);
       case "@".charCodeAt(0):
-        return this.readCommandMessage(depth);
+        return this.readCommandMessage(depth, tail);
       default:
         throw new ProtocolError(
           "Unexpected server message marker.",
@@ -392,7 +392,7 @@ export class MessageDecoder {
     return { command: "ERROR", name, message };
   } // end method readErrorMessage
 
-  private readCommandMessage(depth: number): ServerMessage {
+  private readCommandMessage(depth: number, tail: boolean): ServerMessage {
     const fieldStartOffset = this.offset - 1;
     const command = this.readText(
       this.readLine("command", fieldStartOffset, 18),
@@ -405,16 +405,36 @@ export class MessageDecoder {
         return this.readPeerMessage();
       case "SERVER_MSG":
         return this.readServerNotice();
+      case "PRES_NOTIFY":
+        return this.readPresenceNotification();
       case "PRES_LIST_RESPONSE":
         return this.readPresenceResponse(depth);
       default:
-        throw new ProtocolError(
-          "Unsupported server command.",
-          "command",
-          fieldStartOffset,
-        );
+        return this.skipUnknownCommand(depth, tail, fieldStartOffset);
     }
   } // end method readCommandMessage
+
+  private skipUnknownCommand(
+    depth: number,
+    tail: boolean,
+    fieldStartOffset: number,
+  ): ServerMessage {
+    // A command this version does not know carries an unknown number of
+    // fields, so its end is only knowable when it runs to the end of the
+    // transport message — the same boundary rule errors follow (D-002).
+    // Newer servers may add commands; skipping them keeps this client
+    // working instead of killing its connection (DECODE-01).
+    if (depth !== 0 && !tail) {
+      throw new ProtocolError(
+        "Unknown command inside array has ambiguous boundaries.",
+        "command",
+        fieldStartOffset,
+      );
+    }
+    this.offset = this.bytes.length;
+
+    return { command: "IGNORED" };
+  } // end method skipUnknownCommand
 
   private readPeerMessage(): ServerMessage {
     return {
@@ -434,6 +454,33 @@ export class MessageDecoder {
       payload: this.readPayload(),
     };
   } // end method readServerNotice
+
+  private readPresenceNotification(): ServerMessage {
+    const segmentId = this.readIdentifier("segmentId");
+    const tokenReference = this.readIdentifier("tokenReference");
+    const connectionId = this.readIdentifier("connectionId");
+    const eventOffset = this.offset;
+    const event = this.readInteger("event");
+
+    // A join/leave flag, not metadata: narrowed here rather than passed
+    // through raw, and any other value is not a flag this client knows.
+    if (event !== 0n && event !== 1n) {
+      throw new ProtocolError(
+        "Presence event must be 0 or 1.",
+        "event",
+        eventOffset,
+      );
+    }
+
+    return {
+      command: "PRES_NOTIFY",
+      segmentId,
+      tokenReference,
+      connectionId,
+      joined: event === 1n,
+      timestamp: this.readInteger("timestamp"),
+    };
+  } // end method readPresenceNotification
 
   private readPresenceResponse(depth: number): ServerMessage {
     return {

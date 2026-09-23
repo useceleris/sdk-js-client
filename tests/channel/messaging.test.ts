@@ -362,7 +362,7 @@ describe("delivery and dedup", () => {
     expect(redelivered).toEqual(["id-1"]);
   });
 
-  it("treats a null-id message as protocol corruption (REV-01 strict)", async () => {
+  it("drops a null-id message without dropping the connection (REV-01)", async () => {
     const { channel } = await establish();
     const errors: unknown[] = [];
     const delivered: string[] = [];
@@ -379,8 +379,10 @@ describe("delivery and dedup", () => {
       name: "ProtocolError",
       message: "Server message is missing its identifier.",
     });
-    expect(channel.state).toBe("failed");
-    expect(sockets.at(-1)!.close).toHaveBeenCalled();
+    // The message is undeliverable because it cannot be deduplicated, but
+    // that is one frame's problem, not the connection's (DECODE-01).
+    expect(channel.state).toBe("connected");
+    expect(sockets.at(-1)!.close).not.toHaveBeenCalled();
     expect(vi.getTimerCount()).toBe(0);
   });
 

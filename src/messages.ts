@@ -29,8 +29,18 @@ export type ServerMessage =
       readonly connections: readonly PresenceConnection[];
     }
   | {
+      readonly command: "PRES_NOTIFY";
+      readonly segmentId: string;
+      readonly tokenReference: string;
+      readonly connectionId: string;
+      readonly joined: boolean;
+      readonly timestamp: bigint;
+    }
+  | {
       readonly command: "ERROR";
       readonly name: string;
       readonly message: Uint8Array;
     }
-  | { readonly command: "ARRAY"; readonly messages: readonly ServerMessage[] };
+  | { readonly command: "ARRAY"; readonly messages: readonly ServerMessage[] }
+  // A command this version does not know. Skipped, never surfaced (DECODE-01).
+  | { readonly command: "IGNORED" };
