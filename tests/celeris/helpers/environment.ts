@@ -13,9 +13,10 @@ function requireEnvironment(name: string): string {
   const value = process.env[name];
   if (!value) {
     throw new Error(
-      `${name} is not set. Start the celeris-realtime e2e stack (make test-e2e-up), ` +
-        `seed the qualification app, and export CELERIS_WS_URL, CELERIS_CLIENT_ID ` +
-        `and CELERIS_SIGNING_SECRET. See docs/testing.md (C8).`,
+      `${name} is not set. Copy the three CELERIS_* values into a local ` +
+        `.env (gitignored): CELERIS_WS_URL, CELERIS_CLIENT_ID and ` +
+        `CELERIS_SIGNING_SECRET. Any stack works — change the URL and ` +
+        `credentials to point elsewhere.`,
     );
   }
 
@@ -23,8 +24,6 @@ function requireEnvironment(name: string): string {
 } // end function requireEnvironment
 
 export const websocketUrl = () => requireEnvironment("CELERIS_WS_URL");
-export const secondaryWebsocketUrl = () =>
-  requireEnvironment("CELERIS_WS_URL_SECONDARY");
 export const clientId = () => requireEnvironment("CELERIS_CLIENT_ID");
 export const signingSecret = () => requireEnvironment("CELERIS_SIGNING_SECRET");
 

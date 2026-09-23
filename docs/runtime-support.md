@@ -6,7 +6,17 @@ Consumer floors: Node 22.15.0, Bun 1.3.0 and Deno 2.5.0. Additional qualificatio
 
 The codec needs Uint8Array, bigint, TextEncoder and fatal UTF-8 TextDecoder. It does not need WebSocket, crypto or btoa. Production types use ES2022/DOM with no Node ambient types. C3 requires URL, AbortController/AbortSignal, timers and native WebSocket. Other runtimes must provide those capabilities and execution evidence; no implicit Node fallback.
 
-Current Playwright Chromium/Firefox/WebKit are automated engine targets. They do not qualify branded Chrome/Edge/Firefox/Safari releases or establish a Safari minimum version. See [Playwright browser distinctions](https://playwright.dev/docs/browsers). C8 retains branded-browser and cross-OS evidence. Engines are installed in Playwright's cache without replacing system browsers.
+Browser support claims state exactly what has been executed (PORT-01, aligned 2026-09-22):
+
+| Target                                 | Evidence                                                                                                                                             |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Playwright Chromium / Firefox / WebKit | Automated on macOS (development host) and on Linux and Windows in CI                                                                                 |
+| Branded Chrome (`channel: "chrome"`)   | Automated on macOS; selected with `CELERIS_BROWSER_CHANNELS=chrome`                                                                                  |
+| Branded Edge (`channel: "msedge"`)     | Automated on the Windows CI runner                                                                                                                   |
+| Safari                                 | **Not qualified.** Playwright cannot drive Safari; bundled WebKit is an engine proxy, not a Safari release, and no Safari minimum version is claimed |
+| Branded Firefox, mobile browsers       | **Not qualified.**                                                                                                                                   |
+
+Set `CELERIS_BROWSER_CHANNELS` to a comma-separated list of Playwright channels to add branded builds where installed; unset runs the three bundled engines. See [Playwright browser distinctions](https://playwright.dev/docs/browsers). Engines are installed in Playwright's cache without replacing system browsers.
 
 ## Running the matrix
 

@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { copyFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
 import { join } from "node:path";
-import { chromium, firefox, webkit } from "playwright";
 import { repositoryRoot, runCommand } from "../helpers/commands";
 import { compileFixture, usePackageFixture } from "../helpers/package-fixture";
+import { readBrowserTargets } from "../helpers/browsers";
 import { readRuntimeMatrix } from "../helpers/runtimes";
 import { signCredentials } from "./helpers/credentials";
 import { clientId, signingSecret, websocketUrl } from "./helpers/environment";
@@ -89,8 +89,8 @@ describe("celeris examples", () => {
     const { server, url } = await startSignerEndpoint();
 
     try {
-      for (const engine of [chromium, firefox, webkit]) {
-        const browser = await engine.launch();
+      for (const target of readBrowserTargets()) {
+        const browser = await target.launch();
         try {
           const page = await browser.newPage();
           await page.evaluate(

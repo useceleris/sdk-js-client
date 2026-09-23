@@ -1,0 +1,186 @@
+name: celeris_sdk_ci
+
+# Traffic-shaped stack for the SDK qualification suites: two realtime nodes
+# behind the real HAProxy entrypoint, so tests take the path production
+# clients take. Every Celeris image is pulled prebuilt from GHCR — nothing
+# in this file builds from source.
+#
+# Entrypoint for tests: ws://localhost:19001 (CELERIS_WS_URL), or the
+# port named by CELERIS_ENTRYPOINT_PORT.
+# Credentials are seeded by seed.sql: client id "js-ci", signing secret
+# "js-ci-signing-secret".
+
+x-app-environment: &app-environment
+  APP_PORT: 9000
+  APP_HOST: 0.0.0.0
+  RUST_LOG: "info,app=debug"
+  APP_SECRET: celeris-ci-app-secret
+  APP_KAFKA_BOOTSTRAP_SERVER: "eu;kafka:9092"
+  APP_KAFKA_CHANNEL_TOPIC_REPLICAS: 1
+  APP_KAFKA_CHANNEL_TOPIC_PARTITIONS: 1
+  APP_REDIS_URI: "redis://:redis_password@redis:6379/?protocol=resp3"
+  CELERIS_BACKEND_ORIGIN: "http://localhost:9000"
+  DATABASE_URL: "postgres://postgres:postgres@postgres:5432/celeris"
+  CLICKHOUSE_URL: "http://clickhouse:8123"
+  CLICKHOUSE_USERNAME: clickhouse
+  CLICKHOUSE_PASSWORD: clickhouse_password
+  CLICKHOUSE_DATABASE: celeris
+  APP_OTEL_URL: "http://otel-collector:4317"
+  APP_REGION: eu
+  APP_CHANNEL_IDLE_CHECK_SECONDS: "2"
+  APP_CHANNEL_MULTINODE_CHECK_SECONDS: "2"
+  APP_CLEANUP_CYCLE_SECONDS: "2"
+  APP_CLEANUP_INACTIVE_THRESHOLD_SECONDS: "25"
+  APP_CLEANUP_FULL_SYNC_SECONDS: "10"
+
+x-app-healthcheck: &app-healthcheck
+  test: ["CMD-SHELL", "curl -fsS http://localhost:9000/health-check >/dev/null"]
+  interval: 5s
+  timeout: 5s
+  retries: 40
+  start_period: 30s
+
+services:
+  redis:
+    image: redis:8-alpine
+    command: redis-server --requirepass redis_password
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a redis_password ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: celeris
+    volumes:
+      # Schema first, then the qualification account/app rows.
+      - ./postgres-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ./seed.sql:/docker-entrypoint-initdb.d/02-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d celeris"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25.12
+    environment:
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse_password
+      CLICKHOUSE_DB: celeris
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    volumes:
+      - ./clickhouse-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8123/ping | grep -q Ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # The realtime nodes refuse to start without a reachable OTLP endpoint.
+  otel-collector:
+    image: otel/opentelemetry-collector:0.116.1
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector.config.yaml:/etc/otel/config.yaml:ro
+
+  kafka:
+    image: apache/kafka
+    user: root
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: "PLAINTEXT://:9092,CONTROLLER://:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1",
+        ]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+
+  app-1: &app
+    image: ${CELERIS_REALTIME_IMAGE:-ghcr.io/useceleris/celeris-realtime:prod}
+    environment:
+      <<: *app-environment
+      CELERIS_ADVERTISED_HOST: "app-1"
+      APP_KAFKA_CONSUMER_GROUP_ID: celeris-sdk-ci-group-1
+      APP_KAFKA_PRODUCER_CLIENT_ID: celeris-sdk-ci-producer-1
+    depends_on: &app-dependencies
+      redis: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      clickhouse: { condition: service_healthy }
+      kafka: { condition: service_healthy }
+      otel-collector: { condition: service_started }
+    healthcheck: *app-healthcheck
+
+  app-2:
+    <<: *app
+    environment:
+      <<: *app-environment
+      CELERIS_ADVERTISED_HOST: "app-2"
+      APP_KAFKA_CONSUMER_GROUP_ID: celeris-sdk-ci-group-2
+      APP_KAFKA_PRODUCER_CLIENT_ID: celeris-sdk-ci-producer-2
+    depends_on: *app-dependencies
+
+  # Discovers the nodes over Redis heartbeats and writes HAProxy's config.
+  sidecar:
+    image: ${CELERIS_SIDECAR_IMAGE:-ghcr.io/useceleris/celeris-haproxy-sidecar:prod}
+    environment:
+      SIDECAR_REDIS_URL: "redis://:redis_password@redis:6379/?protocol=resp3"
+      SIDECAR_REGION: eu
+      SIDECAR_OTEL_URL: "http://otel-collector:4317"
+      RUST_LOG: "info,app=debug"
+    group_add: ["1000"]
+    volumes:
+      - haproxy-shared:/shared
+    depends_on:
+      redis: { condition: service_healthy }
+      otel-collector: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health-check"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  haproxy:
+    image: haproxy:3.4.2-alpine
+    group_add: ["1000"]
+    ports:
+      # Override with CELERIS_ENTRYPOINT_PORT when the host port is taken.
+      - "${CELERIS_ENTRYPOINT_PORT:-19001}:80"
+    command:
+      [
+        "haproxy",
+        "-W",
+        "-S",
+        "/shared/haproxy-manager.sock,user,haproxy,gid,1000,mode,660,level,admin,expose-fd,listeners",
+        "-f",
+        "/shared/haproxy.cfg",
+      ]
+    volumes:
+      - haproxy-shared:/shared
+    # The sidecar only reports healthy once this HAProxy's socket exists,
+    # so wait for it to start, not to be healthy.
+    depends_on:
+      sidecar: { condition: service_started }
+      app-1: { condition: service_healthy }
+      app-2: { condition: service_healthy }
+
+volumes:
+  haproxy-shared:

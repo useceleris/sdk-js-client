@@ -1,11 +1,28 @@
 name: Tests
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+
 permissions:
   contents: read
+  packages: read
+
+# A newer run for the same branch or pull request cancels the older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+  # Unit, codec, packaged-consumer and browser suites. No service stack.
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Linux on Blacksmith; Windows stays GitHub-hosted (it ships Edge).
+        os: [blacksmith-4vcpu-ubuntu-2404, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -20,4 +37,40 @@ jobs:
           deno-version: latest
       - run: npm install
       - run: npx playwright install --with-deps chromium firefox webkit
-      - run: npm run test
+      # Windows runners ship Edge; branded coverage is PORT-01 evidence.
+      - if: runner.os == 'Windows'
+        run: echo "CELERIS_BROWSER_CHANNELS=msedge" >> $env:GITHUB_ENV
+      # Build, both typechecks, formatting and the suites.
+      - run: npm run check
+
+  # Live qualification against two realtime nodes behind HAProxy.
+  # arm64: the realtime image publishes linux/arm64 only (see .ci/README.md).
+  celeris:
+    runs-on: blacksmith-4vcpu-ubuntu-2404-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: npm install
+      - name: Start the Celeris stack
+        run: docker compose -f .ci/compose.yaml up -d --wait
+      - name: Qualification suites
+        env:
+          CELERIS_WS_URL: ws://localhost:19001
+          CELERIS_CLIENT_ID: js-ci
+          CELERIS_SIGNING_SECRET: js-ci-signing-secret
+        run: npm run test:celeris
+      - name: Stack logs
+        if: failure()
+        run: docker compose -f .ci/compose.yaml logs --tail 200
+      - name: Stop the Celeris stack
+        if: always()
+        run: docker compose -f .ci/compose.yaml down -v

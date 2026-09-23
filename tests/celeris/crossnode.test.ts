@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   connectedChannel,
   nextMessage,
-  secondaryWebsocketUrl,
   uniqueChannelReference,
 } from "./helpers/environment";
 
@@ -11,15 +10,14 @@ const text = (payload: Uint8Array) => new TextDecoder().decode(payload);
 const settle = (ms = 2_000) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
+// Connections are opened through the configured entrypoint, which
+// distributes them across the stack's nodes; these assert fan-out and
+// presence consistency between independent connections.
 describe("celeris cross-node", () => {
   it("fans out publishes across nodes", async () => {
     const reference = uniqueChannelReference("xnode");
     const primary = await connectedChannel(reference);
-    const secondary = await connectedChannel(
-      reference,
-      {},
-      secondaryWebsocketUrl(),
-    );
+    const secondary = await connectedChannel(reference);
     secondary.segment("chat").subscribe();
     await settle();
 
@@ -39,11 +37,7 @@ describe("celeris cross-node", () => {
   it("reports consistent presence across nodes", async () => {
     const reference = uniqueChannelReference("xpres");
     const primary = await connectedChannel(reference);
-    const secondary = await connectedChannel(
-      reference,
-      {},
-      secondaryWebsocketUrl(),
-    );
+    const secondary = await connectedChannel(reference);
     primary.segment("room").subscribe();
     secondary.segment("room").subscribe();
     await settle(3_000);

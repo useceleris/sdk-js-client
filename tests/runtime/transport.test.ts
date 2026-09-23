@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { WebSocketServer } from "ws";
-import { chromium, firefox, webkit } from "playwright";
+import { readBrowserTargets } from "../helpers/browsers";
 import { compileFixture } from "../helpers/package-fixture";
 import { repositoryRoot } from "../helpers/commands";
 import { readRuntimeMatrix } from "../helpers/runtimes";
@@ -129,9 +129,9 @@ for (const runtime of runtimes) {
     });
   }
 }
-for (const [name, engine] of Object.entries({ chromium, firefox, webkit })) {
-  test(`${name}: native transport and untrusted TLS rejection`, async () => {
-    const browser = await engine.launch();
+for (const target of readBrowserTargets()) {
+  test(`${target.name}: native transport and untrusted TLS rejection`, async () => {
+    const browser = await target.launch();
     try {
       for (const rejectTls of [false, true]) {
         const page = await browser.newPage();

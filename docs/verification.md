@@ -257,3 +257,71 @@ Behavior-neutral simplification of the C4–C9 source ahead of server S4 (owner 
 - Docs: corrected the stale REV-01 "lenient interim" line in contracts.md and testing.md (the interim retired in C8), the two "entrypoint remains empty" claims (transport.md, contracts.md), and the `ConnectionHandler` references (code-conventions.md, testing.md, contracts.md never-exported list). Dated journal entries above retain their original wording. `tsconfig.tooling.json` now typechecks `vitest.celeris.config.ts`.
 
 Client baseline: `d26d80f6` plus this uncommitted pass, macOS 26.7, Node v24.13.0. `npm run build`, both typechecks, `format:check` and `npm test` (354 tests, 21 suites) all passed on 2026-09-21 after the refactor. Reviewed every changed source, test and doc file for removable code; deletions: `ConnectionHandler` class shell, `finishNativeClose`, `defaultSegments`, duplicate `PresenceConnection`, duplicate limit constants, dead constant exports, duplicate type re-export path. No new dependency, no behavior change intended, no publication.
+
+## Maintenance — multi-region dev-environment run — 2026-09-22
+
+`npm run test:celeris` executed unchanged against the operator's local multi-region dev environment (celeris-realtime `b826574`; three instances behind three regional HAProxy gateways — us `ws://localhost:19001`, eu-1 `:19002`, eu-2 `:19003` — with per-region Kafka): **22/22 in six suites (90.9 s)**. `CELERIS_WS_URL` targeted the us gateway and `CELERIS_WS_URL_SECONDARY` the eu-1 gateway, so the crossnode suite exercised genuine cross-region fanout and presence consistency through the gateway layer for the first time (C8 ran against direct nodes on one compose network). Authentication reproduced the D-001 window identically on the dev backend; the examples suite ran the node quickstart on host Node/Bun/Deno and the browser quickstart in Chromium/Firefox/WebKit against the gateway. Credentials were the operator's dev app identity, supplied as environment variables at run time and recorded nowhere. STAGE-SMOKE-01 remains open — this is a local `ws://` environment, not the deployed staging endpoint. No source or test changes in this pass.
+
+## MATRIX-01 — eight-runtime matrix rerun — 2026-09-22
+
+The rerun the tracker gated on stable release. Isolated runtime installations were recreated in a persistent directory (`<workspace>/.runtimes`, outside both repositories, no global installation touched) and selected with `CELERIS_RUNTIME_MATRIX`; `npm run check` then ran end to end.
+
+| Runtime         | Exact version | Result                                               |
+| --------------- | ------------- | ---------------------------------------------------- |
+| Node floor      | v22.15.0      | pass                                                 |
+| Node 22 current | v22.23.2      | pass                                                 |
+| Node 24 current | v24.20.0      | pass                                                 |
+| Node current    | v26.8.1       | pass                                                 |
+| Bun floor       | 1.3.0         | pass                                                 |
+| Bun current     | 1.4.2         | pass                                                 |
+| Deno floor      | 2.5.0         | pass (ESM; CommonJS consumers are skipped by design) |
+| Deno current    | 2.9.6         | pass                                                 |
+
+**`npm run check` on 2026-09-22, macOS 26.7 (aarch64): 391 tests in 21 suites** (up from 354 on the default three-runtime selection — the packed-consumer and codec suites iterate the matrix, so the extra five runtimes add real executions, not repeats). Build, both typechecks and formatting passed in the same run. Chromium/Firefox/WebKit browser evidence comes from the same run's browser suites. The declared Bun floor (1.3.0) is now actually exercised — earlier C4–C9 passes used host Bun 1.1.29, which sits below the floor.
+
+The sibling server package ran the identical matrix in the same session: **185 tests in 11 suites**, all eight runtimes green.
+
+MATRIX-01 is closed. The runtime directory is reusable; recreate it from the versions above if it is removed.
+
+## SLOW-01 — slow-consumer disconnect: recorded waiver — 2026-09-22
+
+The tracker's gate for SLOW-01 is "load scenario or recorded waiver". A load scenario was attempted against the local multi-region dev environment and did not reproduce the disconnect; this records the attempts and the source analysis, and takes the waiver.
+
+**Server mechanism (source inspection, celeris-realtime `b826574`).** The disconnect is not a bounded per-connection output queue. `segment_broadcast_runner.rs` keeps a per-segment backlog of `MAX_BACKLOG_CAPACITY = 100` entries (also evicting entries older than `MAX_BACKLOG_AGE_SECONDS = 60`); `pull_backlog_since_seq` returns `Lagging` when a listener's `last_seen_seq + 1` has fallen behind the oldest retained entry. `client_server.rs` then logs "Slow connection detected; shutting down" and closes with `actix_ws::CloseCode::Error`, i.e. **close code 1011**, reason "Connection closed by server". Reaching `Lagging` requires the per-connection segment listener to be blocked inside its send await long enough for 100+ newer publishes to evict its cursor. A connection that has not yet pulled (`last_seen_seq == None`) can never lag, so a replay-bearing token is required.
+
+**Attempts (all against the dev stack, publisher = SDK channel, stalled reader = raw `ws` socket with `replay: true`, subscribed to the same segment, then `socket.pause()`).** Four configurations: 150 x 1 KiB through the `us` gateway; 150 x 64 KiB through the gateway (the client's own 1 MiB writer bound rejected 135 of 150 — an SDK-side limit, recorded separately as correct behavior); 150 x 100 KiB (~15 MB) through the gateway; and 150 x 100 KiB directly against `app-1` (`ws://localhost:9001`), bypassing HAProxy. In every case all publishes were accepted, the stalled socket received no close frame, the healthy SDK reader stayed connected, and the app logs contained no "Slow connection detected" line. Pausing a client socket does not propagate enough backpressure through the server's write path to block the listener in this topology, so the eviction race never starts.
+
+**Waiver.** The mechanism, thresholds and close code are established by source inspection rather than an executed SDK scenario. The server's own coverage agrees this is hard to force deterministically: `app/src/tests/test_backlog_replay.rs` carries `lagging_client_forces_disconnect_when_backlog_evicted` marked `#[ignore = "timing-sensitive..."]`. No SDK assertion was weakened and no test was left failing; the attempted test file was removed rather than retained in a skipped state.
+
+**SDK behavior if it does occur (by design, unchanged).** The client does not inspect WebSocket close codes: `receiveClose` takes no event, so a 1011 lagging close is handled exactly like any other transport close — `reconnecting`, bounded retry with a replay lookback, then a `RecoveryEvent` declaring possible gaps and duplicates on reconnect. Loss is therefore surfaced to the application (as declared gaps), while the reason is not distinguishable. Surfacing close codes would be a public-surface change and is out of scope for v1.
+
+## Main qualification run — local multi-region environment — 2026-09-22
+
+The local dev environment is the primary test target for this package. `npm run test:celeris` against the regional HAProxy gateways (`CELERIS_WS_URL=ws://localhost:19001`, `CELERIS_WS_URL_SECONDARY=ws://localhost:19002`; credentials supplied as environment variables, never recorded): **26 tests in 7 suites (108.8 s), all passing**, on macOS 26.7 with host Node v24.13.0 against celeris-realtime `b826574`.
+
+Suites: authentication (including the D-001 window), messaging, crossnode (genuine cross-region fanout and presence through the gateway layer), presence, replay, examples (node quickstart on Node/Bun/Deno plus browser quickstart in Chromium/Firefox/WebKit), and the new payload-formats suite below.
+
+**New: [payload formats](../tests/celeris/payload-formats.test.ts).** Payloads are opaque bytes to both the SDK and the server, so the suite proves that property for the three encodings applications actually use — JSON (multibyte UTF-8), MessagePack (fixmap with an embedded `bin8` field carrying NUL and 0xFF bytes), and protobuf (varint, length-delimited non-ASCII string, embedded message). Each vector is hand-encoded in the test (no serializer dependency added), published and received **byte-identically**, and then decoded on arrival — `JSON.parse` for the JSON document, header and `bin8` byte checks for MessagePack, and a varint/length-delimited field walk for protobuf — so the vectors validate themselves rather than mirroring a copy. Four tests.
+
+## PORT-01 — branded browsers and cross-OS — 2026-09-22
+
+The gate's finding was "support claims exceed branded-browser/cross-OS evidence". It is closed by adding the missing evidence where it is obtainable and narrowing the claims everywhere else.
+
+- **Branded-channel selection** is env-driven: [tests/helpers/browsers.ts](../tests/helpers/browsers.ts) returns the three bundled engines plus any Playwright channels named in `CELERIS_BROWSER_CHANNELS`. Unset behavior is unchanged, and the helper replaced three copies of the same engine tuple in [runtime](../tests/runtime/runtime.test.ts), [transport](../tests/runtime/transport.test.ts) and [celeris examples](../tests/celeris/examples.test.ts).
+- **Executed on macOS 26.7, 2026-09-22:** `CELERIS_BROWSER_CHANNELS=chrome` → **29 tests in 2 suites passing** across Chromium, Firefox, WebKit and branded Chrome 153 (package bundle, import guard, codec vectors, native transport and untrusted-TLS rejection in each).
+- **Cross-OS** is delegated to CI: the workflow now runs the full `npm run check` on a `[ubuntu-latest, windows-latest]` matrix, with `CELERIS_BROWSER_CHANNELS=msedge` on Windows (the runner ships Edge). Previously CI was a single Linux job running only `npm run test`.
+- **Claims narrowed** in [runtime support](runtime-support.md) to a per-target evidence table. Safari is now explicitly **not qualified** — Playwright cannot drive Safari, bundled WebKit is an engine proxy rather than a Safari release, and no Safari minimum version is claimed. Branded Firefox and mobile browsers are likewise unclaimed.
+
+PORT-01 closes on the recorded macOS runs plus the first green ubuntu/windows CI runs; the CI half needs a push, which is the user's to make.
+
+## CI qualification stack — 2026-09-22
+
+The `test:celeris` suites now have a reproducible stack of their own, committed at [.ci/](../.ci): two realtime nodes behind the real HAProxy entrypoint and its discovery sidecar, plus Kafka, Redis, Postgres and ClickHouse. Tests connect to the entrypoint, so CI exercises the routing path production clients take rather than a direct node. Every Celeris image is pulled prebuilt from GHCR; nothing builds from source.
+
+- Postgres is initialised with the service's schema dump and [seed.sql](../.ci/seed.sql), which creates account/app `900100` (client id `js-ci`) with the signing secret stored in the server's AES-256-GCM format, plus a generous plan so runs are never throttled. Regeneration recipe: [.ci/README.md](../.ci/README.md).
+- **Verified locally 2026-09-22**: the full client suite (**26 tests in 7 suites**) and the sibling server suite (**12 tests in 3 suites**) both pass against this stack, with a realtime image built from `b826574`.
+- **Two image notes, both recorded in .ci/README.md.** Bring-up initially failed every delivery test with `ProtocolError: Server message is missing its identifier` — the SDK's REV-01 rejection working correctly. The cause was local, not the registry: the `ghcr.io/useceleris/celeris-realtime:prod` pull was denied without authentication, so Docker silently used a cached copy from 2026-08-10 that predates server-assigned message ids. The current published tags carry that behavior, the compose defaults to `:prod`, and CI authenticates before pulling. Separately, the realtime image publishes `linux/arm64` only, so the live job runs on an arm64 runner.
+
+Credentials and target URL now come from a gitignored `.env` (loaded by [vitest.celeris.config.ts](../vitest.celeris.config.ts)); real environment variables take precedence, so CI passes them directly. `CELERIS_WS_URL_SECONDARY` was removed — the cross-node suite opens independent connections through the single entrypoint, which distributes them across nodes.
+
+CI itself was rebuilt in both repositories: triggers narrowed to pushes on `main` and pull requests, a concurrency group cancels superseded runs, the fast job runs the full `npm run check` on ubuntu and windows, and a second job brings the stack up and runs the qualification suites.

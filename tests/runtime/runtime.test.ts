@@ -10,7 +10,7 @@ import {
   decodingVectors,
   malformedVectors,
 } from "../fixtures/codec-vectors";
-import { chromium, firefox, webkit } from "playwright";
+import { readBrowserTargets } from "../helpers/browsers";
 
 const getFixture = usePackageFixture();
 const runtimes = readRuntimeMatrix();
@@ -105,9 +105,9 @@ for (const runtime of runtimes) {
   }
 }
 
-for (const [name, engine] of Object.entries({ chromium, firefox, webkit })) {
-  test(`${name}: installed package bundle and codec vectors`, async () => {
-    const browser = await engine.launch();
+for (const target of readBrowserTargets()) {
+  test(`${target.name}: installed package bundle and codec vectors`, async () => {
+    const browser = await target.launch();
     try {
       const page = await browser.newPage();
       await page.evaluate(() => {
@@ -144,7 +144,7 @@ for (const [name, engine] of Object.entries({ chromium, firefox, webkit })) {
       expect(
         await page.evaluate(() => Reflect.get(globalThis, "codecObservations")),
       ).toEqual(expectedCodec);
-      console.info(`${name}: ${browser.version()}`);
+      console.info(`${target.name}: ${browser.version()}`);
     } finally {
       await browser.close();
     }
