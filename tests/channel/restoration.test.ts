@@ -99,6 +99,28 @@ describe("recovery restoration", () => {
     ]);
   });
 
+  it("keeps the default segment delivering without restoring it", async () => {
+    const setup = await establish();
+    const delivered: string[] = [];
+    setup.channel.segment().subscribe();
+    setup.channel.segment("chat").subscribe();
+    setup.channel
+      .segment()
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
+
+    await reconnect();
+    const reconnectSocket = sockets.at(-1)!;
+
+    // The server auto-joins "default" on the new connection, so restoring it
+    // would be a redundant SUB; a named segment must be rejoined explicitly.
+    expect(framesOn(reconnectSocket)).toEqual(["@SUB\n$4\nchat\n"]);
+
+    // Membership is what matters: the listener still receives.
+    reconnectSocket.receive(messageFrame("default", "id-1", "a"));
+
+    expect(delivered).toEqual(["id-1"]);
+  });
+
   it("absorbs replayed duplicates across reconnect while new ids flow", async () => {
     const setup = await establish();
     const delivered: string[] = [];

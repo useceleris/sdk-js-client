@@ -95,14 +95,21 @@ const membership = chat.subscribe();
 // Publish to this segment. Resolution = the local socket ACCEPTED the bytes.
 // NOT a server receipt. Note: publishing auto-joins the segment server-side,
 // even without subscribe() — you'll appear in its presence.
-await chat.publish({
-  payload: new TextEncoder().encode(JSON.stringify({ hello: "world" })),
-});
+await chat.publish({ payload: jsonPayload({ hello: "world" }) });
 
 // The default segment needs no subscribe() — membership came with connect().
 lobby.onMessage((_payload, metadata) =>
   console.log("lobby:", metadata.messageId),
 );
+
+// Otherwise it is an ordinary segment: publish to it exactly as above.
+await lobby.publish({ payload: textPayload("hello lobby") });
+
+// subscribe() on it is accepted but puts nothing on the wire — the client
+// never emits SUB or UNSUB for "default". You get a local interest handle
+// that is counted like any other, and no server-side operation happens.
+const lobbyMembership = lobby.subscribe();
+lobbyMembership.cancel();
 
 // Tear down: dispose listeners, cancel the interest. When the LAST interest
 // for a non-default segment on this channel is cancelled, UNSUB is sent.
@@ -143,6 +150,12 @@ const chat = channel.segment("chat");
 // segment, not an independent subscription.
 const watching = chat.subscribePresence();
 
+// The default segment is the one place presence differs from messages:
+// connect-time auto-join grants message membership only, never a presence
+// subscription, so PRES_SUB IS sent here — unlike SUB, which the client
+// never emits for "default".
+const lobbyPresence = channel.segment().subscribePresence();
+
 // Join/leave notices arrive as raw prose SERVER_MSG at the CHANNEL level —
 // the wire does not tag them with a segment. Never parse prose into events.
 const stopNotices = channel.events().onNotice((notice) => {
@@ -157,6 +170,7 @@ for (const connection of page.connections) {
 // Out-of-range pages return raw metadata with from > to and no entries.
 
 watching.cancel();
+lobbyPresence.cancel(); // PRES_UNSUB; the server accepts this one
 stopNotices();
 ```
 
@@ -279,6 +293,8 @@ Protobuf keeps payloads compact and schema-checked. Field numbers are the contra
 ## Replay, gaps and duplicates
 
 Reconnects request fresh credentials with a replay lookback covering the outage plus a five-second overlap, and joining a segment replays per the token's replay mode. Replayed messages carry their original server-assigned ids, and the client deduplicates within a bounded 1024-id window per channel — duplicates beyond it remain possible, which is why every `RecoveryEvent` declares `possibleGaps` and `possibleDuplicates`. There is no durable cursor: replay is bounded local recovery, not history.
+
+Restoration treats the default segment the way connecting does. Named segments are rejoined with a fresh SUB on the new socket; the default segment needs none, because the server auto-joins it again on the new connection, so a listener on it keeps receiving with no action from the caller. A default presence interest _is_ re-sent, since presence was never part of that auto-join.
 
 ## Working with bigint values
 
