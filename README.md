@@ -1,6 +1,6 @@
 # @useceleris/client
 
-Realtime client for Celeris channels: connection lifecycle with automatic recovery, segment messaging, and presence — for browsers, Node.js, Bun, and Deno. Private (`0.0.0`); publication is gated by C10 in [STAGES.md](STAGES.md).
+Realtime client for Celeris channels: connection lifecycle with automatic recovery, segment messaging, and presence — for browsers, Node.js, Bun, and Deno.
 
 **The model in three sentences.** A `Channel` is one WebSocket client — creating another `Channel`, even for the same reference, opens another socket. Every segment of that channel is multiplexed over that single connection, and connecting automatically makes you a member of the `"default"` segment. `Segment` handlers are lightweight proxies over the channel connection: create as many as you like, they share the socket and one interest count.
 
@@ -70,4 +70,10 @@ Node.js ≥ 22.15, Bun, Deno, and evergreen browsers (Chrome/Edge 120+, Firefox 
 
 ## Development
 
-`npm run check` — build, typechecks, formatting, full local suite. `npm run test:celeris` — acceptance against a real Celeris stack (see [testing](docs/testing.md)). Contracts and recorded decisions: [contracts](docs/contracts.md); stage tracker and evidence: [STAGES.md](STAGES.md), [verification](docs/verification.md). Read [CONVENTIONS.md](CONVENTIONS.md) before contributing.
+`npm run check` runs the build, both typechecks, formatting and the full local suite — this is the gate every change must pass. `npm run test:celeris` runs the acceptance suites against a real Celeris stack; they need `CELERIS_WS_URL`, `CELERIS_CLIENT_ID` and `CELERIS_SIGNING_SECRET`, read from a gitignored `.env` or from the environment.
+
+Read [CONVENTIONS.md](CONVENTIONS.md) and [code conventions](docs/code-conventions.md) before contributing, and [SECURITY.md](SECURITY.md) before reporting a vulnerability.
+
+## License
+
+[Apache 2.0](LICENSE).

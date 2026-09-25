@@ -1,6 +1,6 @@
 # Conventions
 
-Simplicity and maintainability are paramount. These rules bind every change; stage-specific detail lives in [code conventions](docs/code-conventions.md) and the surface contract in [contracts](docs/contracts.md).
+Simplicity and maintainability are paramount. These rules bind every change; detail lives in [code conventions](docs/code-conventions.md), and the surface contract in the specifications repository.
 
 ## Descriptive names
 
@@ -12,7 +12,7 @@ Solve the current stage with the simplest structure that stays readable. Never a
 
 ## Design patterns only where necessary
 
-Reach for a named design pattern only when a concrete, present requirement demands it, and record the why in [contracts](docs/contracts.md). Absence of a pattern is the default, not a gap.
+Reach for a named design pattern only when a concrete, present requirement demands it, and record the why as a decision in the specifications repository. Absence of a pattern is the default, not a gap.
 
 ## Maintainability
 

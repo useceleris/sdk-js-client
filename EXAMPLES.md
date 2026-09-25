@@ -1,6 +1,6 @@
 # @useceleris/client — consumer examples
 
-> Every snippet below is verified: types are checked against the public surface on every `npm run check` ([drift suite](tests/package/examples-drift.test.ts)), and the runnable variants in [examples/](examples) execute against packed artifacts and a real Celeris stack ([examples suite](tests/celeris/examples.test.ts)). This file mirrors the fixed surface in [docs/contracts.md](docs/contracts.md) and changes in the same commit as any surface change.
+> Every snippet below is verified: types are checked against the public surface on every `npm run check` ([drift suite](tests/package/examples-drift.test.ts)), and the runnable variants in [examples/](examples) execute against packed artifacts and a real Celeris stack ([examples suite](tests/celeris/examples.test.ts)). It changes in the same commit as any surface change.
 
 Credentials are always minted by a trusted server. The browser never sees a signing secret; it fetches short-lived opaque credentials from the application's own authenticated endpoint.
 

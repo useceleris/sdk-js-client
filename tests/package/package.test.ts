@@ -33,7 +33,7 @@ test("packs only intended artifacts and declares resolvable conditional exports"
     packedFiles.every(
       (file) =>
         file.startsWith("dist/") ||
-        ["README.md", "package.json"].includes(file),
+        ["README.md", "LICENSE", "package.json"].includes(file),
     ),
   ).toBe(true);
   const localManifest = JSON.parse(
