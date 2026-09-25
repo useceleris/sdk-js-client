@@ -76,17 +76,23 @@ describe("command encoding", () => {
   });
 
   it("counts complete encoded overhead at the exact limit", () => {
+    // 2 MiB is the whole encoded command, not the payload: "@PUB\n",
+    // "$1\ns\n", "$-1\n", "$2097128\n" and the closing LF are 24 bytes.
+    const limit = 2 * 1024 * 1024;
     const command = {
       command: "PUB" as const,
       segmentId: "s",
-      payload: new Uint8Array(131049),
+      payload: new Uint8Array(limit - 24),
     };
-    expect(encodeClientCommand(command)).toHaveLength(131072);
+
+    expect(encodeClientCommand(command)).toHaveLength(limit);
     expect(() =>
-      encodeClientCommand({ ...command, payload: new Uint8Array(131050) }),
+      encodeClientCommand({ ...command, payload: new Uint8Array(limit - 23) }),
     ).toThrow(ConfigurationError);
+
+    // Characters at the limit, but each one is two UTF-8 bytes.
     expect(() =>
-      encodeClientCommand({ command: "SUB", segmentId: "é".repeat(131072) }),
+      encodeClientCommand({ command: "SUB", segmentId: "é".repeat(limit) }),
     ).toThrow(ConfigurationError);
   });
 
@@ -153,9 +159,9 @@ it("isolates valid encoding from a previous oversized command", () => {
     encodeClientCommand({
       command: "PUB",
       segmentId: "s",
-      payload: new Uint8Array(131050),
+      payload: new Uint8Array(2 * 1024 * 1024 - 23),
     }),
-  ).toThrow("Encoded command exceeds 128 KiB.");
+  ).toThrow("Encoded command exceeds 2 MiB.");
 
   expect(encodeClientCommand({ command: "SUB", segmentId: "chat" })).toEqual(
     utf8("@SUB\n$4\nchat\n"),

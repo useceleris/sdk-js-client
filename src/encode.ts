@@ -1,12 +1,13 @@
 import type { z } from "zod";
 import { clientCommandSchema, type ClientCommand } from "./commands";
 import { ConfigurationError } from "./errors";
-import { maximumCommandBytes } from "./limits";
+import { MAXIMUM_COMMAND_BYTES, TEXT_ENCODER } from "./constants";
 
 type ValidatedClientCommand = z.output<typeof clientCommandSchema>;
 
 export function encodeClientCommand(command: ClientCommand): Uint8Array {
   const parsedCommand = clientCommandSchema.safeParse(command);
+
   if (!parsedCommand.success) {
     throw new ConfigurationError();
   }
@@ -15,7 +16,6 @@ export function encodeClientCommand(command: ClientCommand): Uint8Array {
 }
 
 class CommandEncoder {
-  private readonly textEncoder = new TextEncoder();
   private readonly parts: Uint8Array[] = [];
   private byteLength = 0;
 
@@ -51,6 +51,7 @@ class CommandEncoder {
     } else {
       this.appendBulk(command.messageId);
     }
+
     this.appendBulk(command.payload);
   }
 
@@ -74,26 +75,29 @@ class CommandEncoder {
 
   private append(bytes: Uint8Array): void {
     this.byteLength += bytes.byteLength;
-    if (this.byteLength > maximumCommandBytes) {
-      throw new ConfigurationError("Encoded command exceeds 128 KiB.");
+    if (this.byteLength > MAXIMUM_COMMAND_BYTES) {
+      throw new ConfigurationError("Encoded command exceeds 2 MiB.");
     }
+
     this.parts.push(bytes);
   }
 
   private appendText(text: string): void {
     // UTF-8 cannot be shorter than the UTF-16 code-unit count.
-    if (text.length > maximumCommandBytes) {
-      throw new ConfigurationError("Encoded command exceeds 128 KiB.");
+    if (text.length > MAXIMUM_COMMAND_BYTES) {
+      throw new ConfigurationError("Encoded command exceeds 2 MiB.");
     }
-    this.append(this.textEncoder.encode(text));
+
+    this.append(TEXT_ENCODER.encode(text));
   }
 
   private appendBulk(value: string | Uint8Array): void {
-    if (value.length > maximumCommandBytes) {
-      throw new ConfigurationError("Encoded command exceeds 128 KiB.");
+    if (value.length > MAXIMUM_COMMAND_BYTES) {
+      throw new ConfigurationError("Encoded command exceeds 2 MiB.");
     }
+
     const bytes =
-      typeof value === "string" ? this.textEncoder.encode(value) : value;
+      typeof value === "string" ? TEXT_ENCODER.encode(value) : value;
     this.appendText(`$${bytes.byteLength}\n`);
     this.append(bytes);
     this.appendText("\n");
@@ -102,10 +106,12 @@ class CommandEncoder {
   private assembleCommand(): Uint8Array {
     const encodedCommand = new Uint8Array(this.byteLength);
     let offset = 0;
+
     for (const part of this.parts) {
       encodedCommand.set(part, offset);
       offset += part.byteLength;
     }
+
     return encodedCommand;
   }
 }

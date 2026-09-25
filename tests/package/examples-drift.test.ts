@@ -25,7 +25,7 @@ test("EXAMPLES.md snippets compile against the public surface", () => {
   });
 
   const preamble = [
-    'import { createClient, Client, Channel, Segment, ConnectionError } from "@useceleris/client";',
+    'import { createClient, Client, Channel, Segment, ConnectionError, ServerError } from "@useceleris/client";',
     'import { textPayload, jsonPayload, readText, readJson, createPayloadCodec } from "@useceleris/client";',
     'import type { CredentialRequest, MessageMetadata, PresencePage } from "@useceleris/client";',
     // Serializer libraries used by the payload-format sections.

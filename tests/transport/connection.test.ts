@@ -322,15 +322,34 @@ describe("open connection", () => {
     expect(socket.close).not.toHaveBeenCalled();
   });
 
-  it("reports malformed and oversized binary messages", async () => {
-    for (const data of [utf8("invalid").buffer, new ArrayBuffer(1_048_577)]) {
-      const options = setup();
-      const { socket } = await connect(options);
-      socket.receive(data);
-      expect(options.onError).toHaveBeenCalledWith(
-        expect.objectContaining({ code: "ProtocolError" }),
-      );
-    }
+  it("reports malformed binary messages", async () => {
+    const options = setup();
+    const { socket } = await connect(options);
+
+    socket.receive(utf8("invalid").buffer);
+
+    expect(options.onError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "ProtocolError" }),
+    );
+  });
+
+  it("delivers a received message of any size (LIMIT-01)", async () => {
+    // The platform has already buffered it by now, so the SDK processes what
+    // arrived rather than measuring and discarding it.
+    const options = setup();
+    const { socket } = await connect(options);
+    const payloadLength = 1024 * 1024;
+    const header = utf8(`@SERVER_MSG\n:1\n$${payloadLength}\n`);
+    const bytes = new Uint8Array(header.length + payloadLength + 1);
+
+    bytes.set(header);
+    bytes[bytes.length - 1] = "\n".charCodeAt(0);
+    socket.receive(bytes.buffer);
+
+    expect(options.onError).not.toHaveBeenCalled();
+    expect(options.onMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ command: "SERVER_MSG" }),
+    );
   });
 
   it.each([
@@ -370,11 +389,14 @@ describe("open connection", () => {
     storage.fill(0);
     expect(socket.send).toHaveBeenCalledWith(new Uint8Array([1, 2]));
 
-    handle.send(new Uint8Array(131_072));
-    expect(() => handle.send(new Uint8Array(131_073))).toThrow(
+    // The command bound is the server's 2 MiB transport ceiling, and the
+    // buffer bound equals it, so a maximum command fits an empty buffer.
+    handle.send(new Uint8Array(2 * 1024 * 1024));
+    expect(() => handle.send(new Uint8Array(2 * 1024 * 1024 + 1))).toThrow(
       "Invalid outgoing command.",
     );
-    socket.bufferedAmount = 1_048_575;
+
+    socket.bufferedAmount = 2 * 1024 * 1024 - 1;
     handle.send(new Uint8Array(1));
     expect(() => handle.send(new Uint8Array(2))).toThrow(
       "WebSocket buffer is full.",

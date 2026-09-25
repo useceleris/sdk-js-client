@@ -189,14 +189,7 @@ it("reports the field start for invalid UTF-8 without retaining input", () => {
   expect(JSON.stringify(failure)).not.toContain("synthetic-secret");
 });
 
-it("reports message and array resource limits at their start", () => {
-  expect(() => decodeServerMessage(new Uint8Array(1048577))).toThrow(
-    expect.objectContaining({
-      message: "Message exceeds byte limit.",
-      field: "message",
-      offset: 0,
-    }),
-  );
+it("reports array resource limits at their start", () => {
   expect(() => decodeServerMessage(utf8("*1\n".repeat(32) + "*0\n"))).toThrow(
     expect.objectContaining({
       message: "Array nesting limit exceeded.",

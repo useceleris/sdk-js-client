@@ -14,6 +14,7 @@ export {
   type Subscription,
   type RecoveryEvent,
 } from "./channel";
+
 export { Segment } from "./segment";
 export {
   textPayload,
@@ -24,14 +25,18 @@ export {
   type PayloadCodec,
   type BoundPayloadCodec,
 } from "./payload";
+
 export type {
   Credentials,
   CredentialRequest,
   CredentialProvider,
 } from "./credential-types";
+
 export {
   ConfigurationError,
   ConnectionError,
   ProtocolError,
+  ServerError,
   type ConnectionErrorCode,
+  type ServerErrorCode,
 } from "./errors";

@@ -21,3 +21,35 @@ Header reading advances byte by byte until LF, trimming one preceding CR for CRL
 Encoding validates once before creating per-call encoder state. An exhaustive command switch delegates complete layouts to focused handlers; commands with identical layouts share a handler. Derive handler types from the schema output. Add a schema variant, switch case, layout handler where necessary and independent golden vectors when introducing a command. Keep byte limits and final assembly shared; do not introduce registries or assume every command has a segment.
 
 C3 uses native WebSocket directly. `openConnection()` owns credential acquisition, opening, events and decoding; `ConnectionHandle` owns send and close. Promise resolution is the only open signal. Keep attempt settlement local and explicit; do not add an adapter, factory, registry, diagnostics framework or redundant callback.
+
+## Breathing room
+
+Leave one blank line after a block closes — `if`, `for`, `while`, `switch`, `try` — before the next statement. The only exceptions are a closing brace followed directly by `else`, `catch`, `finally` or another closing brace. Also leave one blank line between a declaration and a multi-line block that uses it.
+
+```ts
+let message: ServerMessage;
+
+try {
+  message = decode(bytes);
+} catch {
+  return;
+}
+
+deliver(message);
+```
+
+Prettier keeps a single blank line but never adds one, so nothing enforces this automatically; it is checked in review. Code packed straight against the block before it is harder to read, and is treated as a defect.
+
+## Constants
+
+Every fixed value lives in `src/constants.ts` — limits, bounds, timeouts, defaults, and shared text encoder/decoder instances — named in `SCREAMING_SNAKE_CASE`:
+
+```ts
+export const MAXIMUM_COMMAND_BYTES = 2 * 1024 * 1024;
+
+export const DEFAULT_SEGMENT_ID = "default";
+```
+
+Import them by name; do not redeclare a value locally or repeat it as a bare literal. A value that appears in two places drifts: the connect timeout was once written in two files, and the replay lookback cap in two others. Keep each constant's explanation as a comment beside it.
+
+Zod schemas are not constants in this sense. They are validation definitions, so they stay beside the code that uses them, in camelCase — though a limit a schema enforces still comes from `src/constants.ts`.

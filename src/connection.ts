@@ -3,15 +3,17 @@ import {
   getSafeParsedCredentials,
   type ConnectionConfiguration,
 } from "./credentials";
+
 import type { CredentialProvider } from "./credential-types";
 import { createCredentialUrl, validateBaseUrl } from "./connection-url";
 import { MessageDecoder } from "./decode";
 import { ConfigurationError, ConnectionError, ProtocolError } from "./errors";
-import { maximumCommandBytes, maximumMessageBytes } from "./limits";
 import type { ServerMessage } from "./messages";
-
-const defaultConnectionTimeoutMs = 15_000;
-const maximumBufferedBytes = 1024 * 1024;
+import {
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  MAXIMUM_BUFFERED_BYTES,
+  MAXIMUM_COMMAND_BYTES,
+} from "./constants";
 
 export type ConnectionOptions = {
   readonly credentialProvider: CredentialProvider;
@@ -34,12 +36,14 @@ export class ConnectionHandle {
     if (this.closed || this.socket.readyState !== this.socket.OPEN) {
       throw new ConnectionError("NotConnected", "Connection is not open.");
     }
+
     if (
       !(bytes instanceof Uint8Array) ||
-      bytes.byteLength > maximumCommandBytes
+      bytes.byteLength > MAXIMUM_COMMAND_BYTES
     ) {
       throw new ConfigurationError("Invalid outgoing command.");
     }
+
     if (
       !Number.isFinite(this.socket.bufferedAmount) ||
       this.socket.bufferedAmount < 0
@@ -49,7 +53,11 @@ export class ConnectionHandle {
         "Invalid WebSocket buffering state.",
       );
     }
-    if (this.socket.bufferedAmount + bytes.byteLength > maximumBufferedBytes) {
+
+    if (
+      this.socket.bufferedAmount + bytes.byteLength >
+      MAXIMUM_BUFFERED_BYTES
+    ) {
       throw new ConnectionError("Backpressure", "WebSocket buffer is full.");
     }
 
@@ -96,9 +104,11 @@ export async function openConnection(
   ) {
     throw new ConfigurationError("Invalid connection options.");
   }
+
   if (typeof globalThis.AbortController !== "function") {
     throw new ConfigurationError("AbortController is unavailable.");
   }
+
   if (typeof globalThis.WebSocket !== "function") {
     throw new ConfigurationError("WebSocket is unavailable.");
   }
@@ -113,7 +123,7 @@ export async function openConnection(
     const timeout = setTimeout(
       () =>
         fail(new ConnectionError("Timeout", "Connection attempt timed out.")),
-      options.timeoutMs ?? defaultConnectionTimeoutMs,
+      options.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
     );
 
     const removeAttemptListeners = (): void => {
@@ -135,6 +145,7 @@ export async function openConnection(
       } catch {
         // Preserve selected safe error.
       }
+
       reject(error);
     };
 
@@ -186,6 +197,7 @@ async function requestCredentialsAndOpenSocket(
   },
 ): Promise<void> {
   let providedCredentials: unknown;
+
   try {
     providedCredentials = await credentialProvider({
       channelReference: config.channelReference,
@@ -199,9 +211,11 @@ async function requestCredentialsAndOpenSocket(
     );
     return;
   }
+
   if (attempt.isSettled()) return;
 
   let credentials: ReturnType<typeof getSafeParsedCredentials>;
+
   try {
     credentials = getSafeParsedCredentials(providedCredentials);
   } catch {
@@ -233,6 +247,7 @@ function createHandle(
     socket.removeEventListener("message", receiveMessage);
     socket.removeEventListener("error", receiveError);
   };
+
   const report = (error: ConnectionError | ProtocolError): void => {
     try {
       options.onError?.(error);
@@ -240,10 +255,12 @@ function createHandle(
       // User callbacks cannot escape native event dispatch.
     }
   };
+
   const reportError = (error: ConnectionError | ProtocolError): void => {
     report(error);
     handle.close();
   };
+
   // A decoder is built per transport message over that message's own bytes,
   // so nothing spans frames and a bad frame cannot desynchronize the next
   // one. Dropping it costs exactly that frame, which is why these report
@@ -256,14 +273,9 @@ function createHandle(
       );
       return;
     }
-    if (event.data.byteLength > maximumMessageBytes) {
-      reportFrameError(
-        new ProtocolError("WebSocket message exceeds 1 MiB.", "message", 0),
-      );
-      return;
-    }
 
     let message: ServerMessage;
+
     try {
       message = new MessageDecoder(new Uint8Array(event.data)).decode();
     } catch (error) {
@@ -274,12 +286,14 @@ function createHandle(
       );
       return;
     }
+
     try {
       options.onMessage(message);
     } catch {
       reportError(new ConnectionError("Transport", "Message callback failed."));
     }
   };
+
   const receiveError = (): void =>
     reportError(new ConnectionError("Transport", "WebSocket failed."));
   const receiveClose = (): void => {

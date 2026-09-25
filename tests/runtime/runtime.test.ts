@@ -21,6 +21,7 @@ const expectedExports = [
   "ConnectionError",
   "ProtocolError",
   "Segment",
+  "ServerError",
   "createClient",
   "createPayloadCodec",
   "jsonPayload",

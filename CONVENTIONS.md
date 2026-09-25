@@ -22,3 +22,9 @@ Reach for a named design pattern only when a concrete, present requirement deman
 - Errors carry fixed safe messages and stable codes; never interpolate received values or attach raw causes.
 - Tests are deterministic (injected clocks/randomness, fake timers), grouped by behavior, and catch package-owned defects only.
 - Before completion, review the full diff for anything deletable without weakening behavior or tests.
+
+## Layout
+
+Leave one blank line after every closing block before the next statement. Details and the exceptions are in [code conventions](docs/code-conventions.md#breathing-room).
+
+Keep every fixed value in `src/constants.ts`, named in `SCREAMING_SNAKE_CASE`. Details are in [code conventions](docs/code-conventions.md#constants).

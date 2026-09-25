@@ -27,8 +27,7 @@ export type ConnectionErrorCode =
   | "NotConnected"
   | "Backpressure"
   | "OperationInProgress"
-  | "DeliveryUnknown"
-  | "Permission";
+  | "DeliveryUnknown";
 
 export class ConnectionError extends Error {
   constructor(
@@ -37,5 +36,26 @@ export class ConnectionError extends Error {
   ) {
     super(message);
     this.name = "ConnectionError";
+  }
+}
+
+// The server's own error names, one per RealtimeError variant (ERR-01).
+export type ServerErrorCode =
+  | "ParserError"
+  | "SendError"
+  | "PermissionDeniedError"
+  | "RateLimitError"
+  | "MessageSizeLimitError";
+
+// An error frame from the server: its name and its message, both exactly as
+// sent. The code stays open to names a newer server may add, so an error this
+// version does not know still reaches the consumer instead of vanishing.
+export class ServerError extends Error {
+  constructor(
+    readonly code: ServerErrorCode | (string & {}),
+    message: string,
+  ) {
+    super(message);
+    this.name = "ServerError";
   }
 }

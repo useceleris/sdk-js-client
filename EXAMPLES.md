@@ -219,14 +219,32 @@ try {
   // ConfigurationError means the call site is wrong; fix it.
 }
 
-// Permission denials arrive asynchronously through events().onError with
-// code "Permission", uncorrelated to any command — the protocol has no acks.
+// Errors the SERVER sends arrive as ServerError through events().onError:
+// the server's own name as `code`, its own text as `message`. They are
+// uncorrelated to any command (the protocol has no acks), and the channel
+// stays connected.
 channel.events().onError((error) => {
-  if (error instanceof ConnectionError && error.code === "Permission") {
-    /* the token lacks access to something it tried */
+  if (!(error instanceof ServerError)) return;
+
+  switch (error.code) {
+    case "PermissionDeniedError": // the token lacks access to what it tried
+      break;
+    case "MessageSizeLimitError": // a publish exceeded your plan's size cap
+      break;
+    case "RateLimitError": // too many messages; back off before retrying
+      break;
+    case "ParserError": // the server could not parse a command
+    case "SendError": // the server failed to deliver
+      break;
+    default: // a name a newer server added
+      break;
   }
+
+  console.warn(error.code, error.message); // e.g. "size limit = 64 KB"
 });
 ```
+
+A publish larger than your plan allows **resolves locally** — the server rejects it afterwards, and that `MessageSizeLimitError` arrives through `onError`. Plan caps are 64 KiB (free), 128 KiB (standard), 512 KiB (pro) and 1024 KiB (prime), and a rejected publish still counts toward your usage. Anything over 2 MiB can never succeed on any plan, so `publish()` rejects it immediately with a `ConfigurationError`.
 
 ## Encoding payloads
 

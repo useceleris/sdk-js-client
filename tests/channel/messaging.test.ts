@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { Segment } from "../../src/segment";
-import { ConfigurationError } from "../../src/errors";
+import { ConfigurationError, ServerError } from "../../src/errors";
 import { utf8 } from "../fixtures/codec-vectors";
 import { createTestChannel, flushMicrotasks } from "../helpers/channel";
 import { sockets, useTestWebSockets } from "../helpers/websocket";
@@ -131,8 +131,8 @@ describe("publish", () => {
       channel.segment().publish({ payload: utf8("x"), messageId: "" }),
     ).rejects.toBeInstanceOf(ConfigurationError);
     await expect(
-      channel.segment().publish({ payload: new Uint8Array(131_073) }),
-    ).rejects.toThrow("Encoded command exceeds 128 KiB.");
+      channel.segment().publish({ payload: new Uint8Array(2 * 1024 * 1024) }),
+    ).rejects.toThrow("Encoded command exceeds 2 MiB.");
     expect(sockets.at(-1)!.send).not.toHaveBeenCalled();
 
     await channel.segment().publish({ payload: new Uint8Array(0) });
@@ -404,17 +404,18 @@ describe("delivery and dedup", () => {
     sockets.at(-1)!.receive(utf8("-Err\nRateLimitError\nslow down").buffer);
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
 
+    // The server's own name and message reach the consumer (ERR-01).
     expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(ServerError);
     expect(errors[0]).toMatchObject({
-      code: "Transport",
-      message: "Server reported an error.",
+      code: "RateLimitError",
+      message: "slow down",
     });
-    expect(JSON.stringify(errors[0])).not.toContain("slow down");
     expect(channel.state).toBe("connected");
     expect(delivered).toEqual(["id-1"]);
   });
 
-  it("maps permission-denied error frames to the Permission code", async () => {
+  it("reports a permission denial as its server error, uncorrelated", async () => {
     const { channel } = await establish();
     const errors: unknown[] = [];
     const delivered: string[] = [];
@@ -430,12 +431,65 @@ describe("delivery and dedup", () => {
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({
-      code: "Permission",
-      message: "Server denied permission.",
+      code: "PermissionDeniedError",
+      message: "denied",
     });
-    expect(JSON.stringify(errors[0])).not.toContain("denied");
     expect(channel.state).toBe("connected");
     expect(delivered).toEqual(["id-1"]);
+  });
+
+  it.each([
+    "ParserError",
+    "SendError",
+    "PermissionDeniedError",
+    "RateLimitError",
+    "MessageSizeLimitError",
+    // A name a newer server adds still reaches the consumer.
+    "SomeFutureError",
+  ])("surfaces a %s frame with its name and message", async (name) => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+
+    channel.events().onError((error) => errors.push(error));
+    sockets.at(-1)!.receive(utf8(`-Err\n${name}\nwhat happened`).buffer);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(ServerError);
+    expect(errors[0]).toMatchObject({ code: name, message: "what happened" });
+    expect(channel.state).toBe("connected");
+  });
+
+  it("surfaces the server's message-size rejection exactly as sent", async () => {
+    // The real frame: name, message, and no trailing LF.
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    const message =
+      "Message size limit exceeded; payload size = 65537 bytes; size limit = 64 KB";
+
+    channel.events().onError((error) => errors.push(error));
+    sockets
+      .at(-1)!
+      .receive(utf8(`-Err\nMessageSizeLimitError\n${message}`).buffer);
+
+    expect(errors[0]).toMatchObject({ code: "MessageSizeLimitError", message });
+  });
+
+  it("never throws while delivering a malformed server message", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    const frame = new Uint8Array([
+      ...utf8("-Err\nSendError\nbad "),
+      0xff,
+      0xfe,
+    ]);
+
+    channel.events().onError((error) => errors.push(error));
+    sockets.at(-1)!.receive(frame.buffer);
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: "SendError" });
+    expect((errors[0] as Error).message.startsWith("bad ")).toBe(true);
+    expect(channel.state).toBe("connected");
   });
 
   it("contains throwing listeners and honors mid-dispatch disposal", async () => {

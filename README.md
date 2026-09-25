@@ -47,20 +47,22 @@ Full walkthroughs — lifecycle events, presence, permissions, error handling �
 - `publish()` resolves when the local socket accepted the bytes — there is **no server receipt or ack** anywhere in the protocol; server responses are untagged prose notices.
 - Lost connections retry automatically (10 attempts, full jitter, fresh credentials, replay lookback). Recovery restores your subscriptions and reports **possible gaps and duplicates**; a bounded 1024-id window deduplicates replayed messages, duplicates beyond it remain possible.
 - No offline queue, no automatic resend, no durable history, no global ordering.
-- Permission denials arrive uncorrelated through `events().onError` with code `"Permission"`; a denied publish still resolves locally.
+- Errors the server sends — `PermissionDeniedError`, `RateLimitError`, `MessageSizeLimitError`, `ParserError`, `SendError` — arrive through `events().onError` as a `ServerError` carrying the server's own name and message. They are uncorrelated to any command, so a denied or oversized publish still resolves locally.
 - Publishing to a segment joins it server-side; subscribing to presence also joins it for messages.
 
 ## Limits and defaults
 
 | What             | Value                                            |
 | ---------------- | ------------------------------------------------ |
-| Outbound command | 128 KiB encoded, rejected before any write       |
-| Inbound message  | 1 MiB                                            |
-| Writer bounds    | 64 pending commands / 1 MiB incl. socket buffer  |
+| Outbound command | 2 MiB encoded, rejected before any write         |
+| Plan payload cap | enforced by the server per plan; see below       |
+| Writer bounds    | 64 pending commands / 2 MiB incl. socket buffer  |
 | Connect deadline | `connectTimeoutMs`, default 15 s                 |
 | Presence query   | one in flight per channel, default 10 s deadline |
 | Reconnect        | 10 retries, full jitter ≤30 s, reset after 60 s  |
 | Dedup window     | 1024 message ids per channel                     |
+
+Received messages are never size-checked: the platform has already buffered them by the time they arrive, so the client processes whatever the server sends. Each plan caps publish payloads — 64 KiB free, 128 KiB standard, 512 KiB pro, 1024 KiB prime. A publish over your plan's cap resolves locally and is rejected afterwards with a `MessageSizeLimitError`, and it still counts toward your usage.
 
 `MessageMetadata.timestamp` and presence metadata are `bigint` — `JSON.stringify` needs an explicit replacer; the documented convention is decimal strings (`value.toString()`).
 

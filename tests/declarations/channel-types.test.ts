@@ -14,7 +14,11 @@ import type {
   ServerNotice,
   Subscription,
 } from "../../src/channel";
-import type { ConnectionErrorCode } from "../../src/errors";
+import type {
+  ConnectionErrorCode,
+  ServerError,
+  ServerErrorCode,
+} from "../../src/errors";
 import type { Segment } from "../../src/segment";
 import type { ClientOptions } from "../../src/client";
 import type {
@@ -186,8 +190,22 @@ describe("channel type contracts", () => {
       | "Backpressure"
       | "OperationInProgress"
       | "DeliveryUnknown"
-      | "Permission"
     >();
+  });
+
+  it("mirrors the server's error names one for one (ERR-01)", () => {
+    expectTypeOf<ServerErrorCode>().toEqualTypeOf<
+      | "ParserError"
+      | "SendError"
+      | "PermissionDeniedError"
+      | "RateLimitError"
+      | "MessageSizeLimitError"
+    >();
+
+    // Known names autocomplete; a name a newer server adds still type-checks.
+    expectTypeOf<"RateLimitError">().toMatchTypeOf<ServerError["code"]>();
+    expectTypeOf<"SomeFutureError">().toMatchTypeOf<ServerError["code"]>();
+    expectTypeOf<ServerError["message"]>().toEqualTypeOf<string>();
   });
 
   it("rejects mutation of readonly event fields", () => {

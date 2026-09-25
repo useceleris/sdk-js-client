@@ -2,22 +2,31 @@ import { identifierSchema } from "./commands";
 import { openConnection, type ConnectionHandle } from "./connection";
 import type { CredentialProvider } from "./credential-types";
 import { encodeClientCommand } from "./encode";
-import { ConfigurationError, ConnectionError, ProtocolError } from "./errors";
-import type { PresenceConnection, ServerMessage } from "./messages";
 import {
-  closeBudgetMs,
-  computeReplayLookbackMs,
-  computeRetryDelayMs,
-  maximumRetries,
-  retryBudgetResetMs,
-} from "./reconnect";
+  ConfigurationError,
+  ConnectionError,
+  ProtocolError,
+  ServerError,
+} from "./errors";
+
+import type { PresenceConnection, ServerMessage } from "./messages";
+import { computeReplayLookbackMs, computeRetryDelayMs } from "./reconnect";
+
 import { Segment, type SegmentDelegates } from "./segment";
+import {
+  CLOSE_BUDGET_MS,
+  DEDUP_WINDOW_SIZE,
+  DEFAULT_SEGMENT_ID,
+  LENIENT_TEXT_DECODER,
+  MAXIMUM_PENDING_COMMANDS,
+  MAXIMUM_RETRIES,
+  RETRY_BUDGET_RESET_MS,
+} from "./constants";
 
-const defaultSegmentId = "default";
-const dedupWindowSize = 1024;
-const maximumPendingCommands = 64;
+// Replaces malformed bytes rather than throwing: error delivery must not fail.
 
-export type ChannelError = ConfigurationError | ConnectionError | ProtocolError;
+export type ChannelError =
+  ConfigurationError | ConnectionError | ProtocolError | ServerError;
 
 export type MessageMetadata = {
   readonly tokenReference: string;
@@ -145,7 +154,7 @@ class DedupWindow {
     if (this.identifiers.has(identifier)) return true;
 
     this.identifiers.add(identifier);
-    if (this.identifiers.size > dedupWindowSize) {
+    if (this.identifiers.size > DEDUP_WINDOW_SIZE) {
       const oldest = this.identifiers.values().next().value;
       if (oldest !== undefined) this.identifiers.delete(oldest);
     }
@@ -216,6 +225,7 @@ export class Channel {
     onNotice: (listener) => this.noticeListeners.add(listener),
     onError: (listener) => this.errorListeners.add(listener),
   };
+
   private readonly segmentDelegates: SegmentDelegates = {
     addMessageListener: (segmentId, listener) =>
       this.addMessageListener(segmentId, listener),
@@ -240,7 +250,7 @@ export class Channel {
   } // end method events
 
   segment(segmentId?: string): Segment {
-    const resolved = segmentId ?? defaultSegmentId;
+    const resolved = segmentId ?? DEFAULT_SEGMENT_ID;
     if (!identifierSchema.safeParse(resolved).success)
       throw new ConfigurationError("Invalid segment identifier.");
 
@@ -277,6 +287,7 @@ export class Channel {
         this.generation += 1;
         this.setState("failed");
       }
+
       throw error;
     }
 
@@ -306,7 +317,7 @@ export class Channel {
       if (this.currentState !== "closed") {
         this.closeBudgetTimer = setTimeout(
           () => this.finishClose(),
-          closeBudgetMs,
+          CLOSE_BUDGET_MS,
         );
       }
     } else {
@@ -394,6 +405,7 @@ export class Channel {
     listener: MessageListener,
   ): () => void {
     let listeners = this.segmentListeners.get(segmentId);
+
     if (!listeners) {
       listeners = new ListenerSet<Parameters<MessageListener>>(() =>
         this.reportListenerFailure(),
@@ -409,6 +421,7 @@ export class Channel {
     listener: PresenceListener,
   ): () => void {
     let listeners = this.presenceListeners.get(segmentId);
+
     if (!listeners) {
       listeners = new ListenerSet<[PresenceEvent]>(() =>
         this.reportListenerFailure(),
@@ -424,12 +437,12 @@ export class Channel {
       this.messageInterests,
       segmentId,
       () => {
-        if (segmentId !== defaultSegmentId)
+        if (segmentId !== DEFAULT_SEGMENT_ID)
           this.sendInterestCommand({ command: "SUB", segmentId });
       },
       () => {
         if (
-          segmentId !== defaultSegmentId &&
+          segmentId !== DEFAULT_SEGMENT_ID &&
           !this.presenceInterests.has(segmentId)
         )
           this.sendInterestCommand({ command: "UNSUB", segmentId });
@@ -471,10 +484,12 @@ export class Channel {
         cancelled = true;
 
         const remaining = (interests.get(segmentId) ?? 1) - 1;
+
         if (remaining > 0) {
           interests.set(segmentId, remaining);
           return;
         }
+
         interests.delete(segmentId);
         if (this.currentState === "connected") sendUnsubscribe();
       },
@@ -505,6 +520,7 @@ export class Channel {
       page: options.page,
       perPage: options.perPage,
     });
+
     // A synchronous send failure rejects without ever taking the query slot.
     this.sendCommand(bytes);
 
@@ -592,6 +608,7 @@ export class Channel {
       messageId: options.messageId,
       payload: options.payload,
     });
+
     this.sendCommand(bytes);
   } // end method publishToSegment
 
@@ -603,7 +620,7 @@ export class Channel {
     // No native drain event exists: the command count resets whenever the
     // buffer is observed empty at send time (documented approximation).
     if (handle.bufferedAmount === 0) this.pendingCommands = 0;
-    if (this.pendingCommands >= maximumPendingCommands)
+    if (this.pendingCommands >= MAXIMUM_PENDING_COMMANDS)
       throw new ConnectionError("Backpressure", "Command writer is full.");
 
     handle.send(bytes);
@@ -630,10 +647,11 @@ export class Channel {
 
   private flushInterests(): void {
     for (const segmentId of this.messageInterests.keys()) {
-      if (segmentId === defaultSegmentId) continue;
+      if (segmentId === DEFAULT_SEGMENT_ID) continue;
 
       this.sendCommand(encodeClientCommand({ command: "SUB", segmentId }));
     }
+
     for (const segmentId of this.presenceInterests.keys()) {
       this.sendCommand(encodeClientCommand({ command: "PRES_SUB", segmentId }));
     }
@@ -654,15 +672,15 @@ export class Channel {
         this.deliverMessage(message);
         return;
       case "ERROR":
-        // The server never closes the socket on an error frame; report once
-        // and remain connected. Denials arrive uncorrelated to any command.
-        // Known decoder-bounded error names map to specific codes; the
-        // handshake status itself is never observable, so Permission comes
-        // only from this wire source.
+        // The server never closes the socket on an error frame; report it
+        // once, with its own name and message, and remain connected. It is
+        // uncorrelated to any command, because the protocol has no ids for
+        // that (ERR-01).
         this.emitError(
-          message.name === "PermissionDeniedError"
-            ? new ConnectionError("Permission", "Server denied permission.")
-            : new ConnectionError("Transport", "Server reported an error."),
+          new ServerError(
+            message.name,
+            LENIENT_TEXT_DECODER.decode(message.message),
+          ),
         );
         return;
       case "SERVER_MSG":
@@ -670,6 +688,7 @@ export class Channel {
           timestamp: message.timestamp,
           payload: message.payload,
         });
+
         return;
       case "PRES_NOTIFY":
         this.deliverPresence(message);
@@ -784,13 +803,14 @@ export class Channel {
       this.emitError(error);
       return;
     }
+
     this.enterReconnecting();
   } // end method receiveSocketError
 
   private enterReconnecting(): void {
     this.rejectPresenceQueryOnConnectionLoss();
     const now = this.internals.clock();
-    if (now - this.connectedAtMonotonic >= retryBudgetResetMs)
+    if (now - this.connectedAtMonotonic >= RETRY_BUDGET_RESET_MS)
       this.retriesUsed = 0;
 
     this.outage = {
@@ -839,13 +859,15 @@ export class Channel {
         (error.code === "Transport" || error.code === "Timeout")
       ) {
         this.retriesUsed += 1;
-        if (this.retriesUsed >= maximumRetries) {
+        if (this.retriesUsed >= MAXIMUM_RETRIES) {
           this.failTerminal(error);
           return;
         }
+
         this.scheduleRetry();
         return;
       }
+
       this.failTerminal(
         error instanceof ConfigurationError ||
           error instanceof ConnectionError ||

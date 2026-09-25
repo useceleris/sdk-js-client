@@ -38,15 +38,19 @@ describe("server decoding", () => {
       ),
     ).toThrow(ProtocolError);
   });
-  it("bounds message bytes, including framing", () => {
-    const header = utf8("@SERVER_MSG\n:1\n$1048551\n");
-    const bytes = new Uint8Array(1048576);
+  it("decodes messages beyond the former 1 MiB bound (LIMIT-01)", () => {
+    // A prime-plan delivery: a full 1024 KiB payload plus its framing.
+    const payloadLength = 1024 * 1024;
+    const header = utf8(`@MSG\n+user\n+chat\n+msg_1\n:1\n$${payloadLength}\n`);
+    const bytes = new Uint8Array(header.length + payloadLength + 1);
+
     bytes.set(header);
     bytes[bytes.length - 1] = "\n".charCodeAt(0);
-    expect(decodeServerMessage(bytes)).toHaveProperty("command", "SERVER_MSG");
-    expect(() => decodeServerMessage(new Uint8Array(1048577))).toThrow(
-      ProtocolError,
-    );
+
+    const message = decodeServerMessage(bytes);
+
+    expect(bytes.byteLength).toBeGreaterThan(1024 * 1024);
+    expect(message).toMatchObject({ command: "MSG", segmentId: "chat" });
   });
   it("owns payload copies independently of inputs and siblings", () => {
     const bytes = utf8("*2\n@SERVER_MSG\n:1\n$1\nx\n@SERVER_MSG\n:1\n$1\nx\n");

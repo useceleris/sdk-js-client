@@ -1,19 +1,19 @@
 import { ProtocolError } from "./errors";
-import { maximumMessageBytes } from "./limits";
 import type { PresenceConnection, ServerMessage } from "./messages";
-
-const maximumFragments = 4096;
-const maximumDepth = 32;
-const minimumInteger = -(1n << 63n);
-const maximumInteger = (1n << 63n) - 1n;
+import {
+  MAXIMUM_COMMAND_NAME_BYTES,
+  MAXIMUM_DEPTH,
+  MAXIMUM_ERROR_NAME_BYTES,
+  MAXIMUM_FRAGMENTS,
+  MAXIMUM_INTEGER,
+  MAXIMUM_INTEGER_LINE_BYTES,
+  MINIMUM_INTEGER,
+  STRICT_TEXT_DECODER,
+} from "./constants";
 
 export class MessageDecoder {
   private offset = 0;
   private fragments = 0;
-  private readonly decoder = new TextDecoder("utf-8", {
-    fatal: true,
-    ignoreBOM: true,
-  });
 
   constructor(private readonly bytes: Uint8Array) {}
 
@@ -36,13 +36,14 @@ export class MessageDecoder {
     this.fragments++;
     const marker = this.bytes[this.offset++];
 
-    if (this.fragments > maximumFragments) {
+    if (this.fragments > MAXIMUM_FRAGMENTS) {
       throw new ProtocolError(
         "Fragment limit exceeded.",
         field,
         fieldStartOffset,
       );
     }
+
     if (marker === undefined) {
       throw new ProtocolError("Missing field marker.", field, fieldStartOffset);
     }
@@ -53,16 +54,18 @@ export class MessageDecoder {
   private readLine(
     field: string,
     fieldStartOffset: number,
-    maximumLength = maximumMessageBytes,
+    maximumLength = this.bytes.length,
   ): Uint8Array {
     const lineStart = this.offset;
 
     while (this.offset < this.bytes.length) {
       if (this.bytes[this.offset++] === "\n".charCodeAt(0)) {
         let contentEnd = this.offset - 1;
+
         if (this.bytes[contentEnd - 1] === "\r".charCodeAt(0)) {
           contentEnd -= 1;
         }
+
         if (contentEnd - lineStart > maximumLength) {
           throw new ProtocolError(
             "Line exceeds byte limit.",
@@ -70,6 +73,7 @@ export class MessageDecoder {
             fieldStartOffset,
           );
         }
+
         return this.bytes.subarray(lineStart, contentEnd);
       }
 
@@ -91,7 +95,7 @@ export class MessageDecoder {
     fieldStartOffset: number,
   ): string {
     try {
-      return this.decoder.decode(bytes);
+      return STRICT_TEXT_DECODER.decode(bytes);
     } catch {
       throw new ProtocolError("Invalid UTF-8 text.", field, fieldStartOffset);
     }
@@ -99,7 +103,7 @@ export class MessageDecoder {
 
   private readDecimal(field: string, fieldStartOffset: number): bigint {
     const text = this.readText(
-      this.readLine(field, fieldStartOffset, 20),
+      this.readLine(field, fieldStartOffset, MAXIMUM_INTEGER_LINE_BYTES),
       field,
       fieldStartOffset,
     );
@@ -112,6 +116,7 @@ export class MessageDecoder {
     }
 
     const digits = text.startsWith("-") ? text.slice(1) : text;
+
     if (digits.length === 0 || /[^0-9]/.test(digits)) {
       throw new ProtocolError(
         "Expected decimal digits.",
@@ -120,18 +125,20 @@ export class MessageDecoder {
       );
     }
 
-    if (value < minimumInteger || value > maximumInteger) {
+    if (value < MINIMUM_INTEGER || value > MAXIMUM_INTEGER) {
       throw new ProtocolError(
         "Integer exceeds signed-64 range.",
         field,
         fieldStartOffset,
       );
     }
+
     return value;
   } // end method readDecimal
 
   private readInteger(field: string): bigint {
     const fieldStartOffset = this.offset;
+
     if (this.readMarker(field) !== ":".charCodeAt(0)) {
       throw new ProtocolError(
         "Expected integer marker.",
@@ -145,6 +152,7 @@ export class MessageDecoder {
 
   private readBytes(field: string): Uint8Array | null {
     const fieldStartOffset = this.offset;
+
     switch (this.readMarker(field)) {
       case "+".charCodeAt(0):
         return this.readLine(field, fieldStartOffset);
@@ -176,6 +184,7 @@ export class MessageDecoder {
         fieldStartOffset,
       );
     }
+
     if (length > BigInt(this.bytes.length - this.offset)) {
       throw new ProtocolError(
         "Bulk payload exceeds remaining message bytes.",
@@ -260,7 +269,7 @@ export class MessageDecoder {
   ): number {
     const fieldStartOffset = markerAlreadyRead ? this.offset - 1 : this.offset;
 
-    if (depth >= maximumDepth) {
+    if (depth >= MAXIMUM_DEPTH) {
       throw new ProtocolError(
         "Array nesting limit exceeded.",
         field,
@@ -286,13 +295,14 @@ export class MessageDecoder {
       );
     }
 
-    if (length > BigInt(maximumFragments - this.fragments)) {
+    if (length > BigInt(MAXIMUM_FRAGMENTS - this.fragments)) {
       throw new ProtocolError(
         "Array length exceeds fragment budget.",
         field,
         fieldStartOffset,
       );
     }
+
     return Number(length);
   } // end method readArrayLength
 
@@ -302,6 +312,7 @@ export class MessageDecoder {
 
     for (let index = 0; index < length; index += 1) {
       const fieldStartOffset = this.offset;
+
       if (this.readArrayLength(depth + 1, "connection") !== 3) {
         throw new ProtocolError(
           "Presence connection must contain three fields.",
@@ -322,6 +333,7 @@ export class MessageDecoder {
 
   private readMessage(depth: number, tail: boolean): ServerMessage {
     const fieldStartOffset = this.offset;
+
     switch (this.readMarker("message")) {
       case "*".charCodeAt(0):
         return this.readMessageArray(depth, tail);
@@ -362,6 +374,7 @@ export class MessageDecoder {
         fieldStartOffset,
       );
     }
+
     if (
       this.readText(
         this.readLine("error", fieldStartOffset, 3),
@@ -378,7 +391,7 @@ export class MessageDecoder {
 
     const nameOffset = this.offset;
     const name = this.readText(
-      this.readLine("errorName", nameOffset, 64),
+      this.readLine("errorName", nameOffset, MAXIMUM_ERROR_NAME_BYTES),
       "errorName",
       nameOffset,
     );
@@ -395,7 +408,7 @@ export class MessageDecoder {
   private readCommandMessage(depth: number, tail: boolean): ServerMessage {
     const fieldStartOffset = this.offset - 1;
     const command = this.readText(
-      this.readLine("command", fieldStartOffset, 18),
+      this.readLine("command", fieldStartOffset, MAXIMUM_COMMAND_NAME_BYTES),
       "command",
       fieldStartOffset,
     );
@@ -431,6 +444,7 @@ export class MessageDecoder {
         fieldStartOffset,
       );
     }
+
     this.offset = this.bytes.length;
 
     return { command: "IGNORED" };
@@ -502,9 +516,6 @@ export class MessageDecoder {
 export function decodeServerMessage(bytes: Uint8Array): ServerMessage {
   if (!(bytes instanceof Uint8Array)) {
     throw new ProtocolError("Expected byte buffer.", "message", 0);
-  }
-  if (bytes.byteLength > maximumMessageBytes) {
-    throw new ProtocolError("Message exceeds byte limit.", "message", 0);
   }
 
   return new MessageDecoder(bytes).decode();

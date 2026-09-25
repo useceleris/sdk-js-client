@@ -5,16 +5,20 @@ import type { CredentialProvider } from "./credential-types";
 import { channelReferenceSchema } from "./credentials";
 import { ConfigurationError } from "./errors";
 import { monotonicNow } from "./reconnect";
-
-// Consumers do not configure where Celeris lives; overriding is for local
-// stacks and other deployments (ENDPOINT-01).
-const defaultBaseUrl = "wss://realtime.useceleris.com";
+import {
+  DEFAULT_BASE_URL,
+  DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_PRESENCE_QUERY_TIMEOUT_MS,
+} from "./constants";
 
 const clientOptionsSchema = z.object({
-  baseUrl: z.string().min(1).default(defaultBaseUrl),
+  baseUrl: z.string().min(1).default(DEFAULT_BASE_URL),
   allowInsecureLoopback: z.boolean().default(false),
-  connectTimeoutMs: z.int().min(1).default(15_000),
-  presenceQueryTimeoutMs: z.int().min(1).default(10_000),
+  connectTimeoutMs: z.int().min(1).default(DEFAULT_CONNECT_TIMEOUT_MS),
+  presenceQueryTimeoutMs: z
+    .int()
+    .min(1)
+    .default(DEFAULT_PRESENCE_QUERY_TIMEOUT_MS),
 });
 
 export type ClientOptions = {

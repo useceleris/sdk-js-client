@@ -1,13 +1,12 @@
 import { ConfigurationError } from "./errors";
+import { STRICT_TEXT_DECODER, TEXT_ENCODER } from "./constants";
 
 // Payloads are opaque bytes on the wire. These helpers cover the two
 // encodings applications reach for first; every other format goes through
 // createPayloadCodec, which keeps serializer libraries out of this package.
-const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export function textPayload(value: string): Uint8Array {
-  return encoder.encode(value);
+  return TEXT_ENCODER.encode(value);
 } // end function textPayload
 
 export function jsonPayload(value: unknown): Uint8Array {
@@ -20,15 +19,16 @@ export function jsonPayload(value: unknown): Uint8Array {
     // symbols serialize to nothing at all. Both are the same refusal, and
     // neither may surface the input.
   }
+
   if (serialized === undefined)
     throw new ConfigurationError("Value is not JSON-serializable.");
 
-  return encoder.encode(serialized);
+  return TEXT_ENCODER.encode(serialized);
 } // end function jsonPayload
 
 export function readText(payload: Uint8Array): string {
   try {
-    return decoder.decode(payload);
+    return STRICT_TEXT_DECODER.decode(payload);
   } catch {
     throw new ConfigurationError("Payload is not valid UTF-8.");
   }

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { Credentials } from "./credential-types";
 import { ConfigurationError } from "./errors";
+import { REPLAY_LOOKBACK_CAP_MS } from "./constants";
 
 const credentialValueSchema = z
   .string()
@@ -21,7 +22,7 @@ export function getSafeParsedCredentials(credentials: unknown): Credentials {
   return parsed.data;
 } //end function getSafeParsedCredentials
 
-const replayLookbackMsSchema = z.int().min(0).max(4294967295);
+const replayLookbackMsSchema = z.int().min(0).max(REPLAY_LOOKBACK_CAP_MS);
 
 const recoverySchema = z.discriminatedUnion("reason", [
   z.object({ reason: z.literal("initial") }),

@@ -1,25 +1,26 @@
-export const maximumRetries = 10;
-export const retryBudgetResetMs = 60_000;
-export const closeBudgetMs = 5_000;
-
-const retryBaseDelayMs = 500;
-const retryDelayCapMs = 30_000;
-const replayLookbackCapMs = 4_294_967_295;
-const replayOverlapMs = 5_000;
+import {
+  REPLAY_LOOKBACK_CAP_MS,
+  REPLAY_OVERLAP_MS,
+  RETRY_BASE_DELAY_MS,
+  RETRY_DELAY_CAP_MS,
+} from "./constants";
 
 export function computeRetryDelayMs(
   retryIndex: number,
   random: () => number,
 ): number {
-  const ceiling = Math.min(retryDelayCapMs, retryBaseDelayMs * 2 ** retryIndex);
+  const ceiling = Math.min(
+    RETRY_DELAY_CAP_MS,
+    RETRY_BASE_DELAY_MS * 2 ** retryIndex,
+  );
 
   return random() * ceiling;
 } // end function computeRetryDelayMs
 
 export function computeReplayLookbackMs(elapsedOutageMs: number): number {
   return Math.min(
-    Math.ceil(elapsedOutageMs) + replayOverlapMs,
-    replayLookbackCapMs,
+    Math.ceil(elapsedOutageMs) + REPLAY_OVERLAP_MS,
+    REPLAY_LOOKBACK_CAP_MS,
   );
 } // end function computeReplayLookbackMs
 
