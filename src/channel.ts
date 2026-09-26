@@ -20,6 +20,7 @@ import {
   LENIENT_TEXT_DECODER,
   MAXIMUM_PENDING_COMMANDS,
   MAXIMUM_RETRIES,
+  PRESENCE_LIST_COMMAND,
   RETRY_BUDGET_RESET_MS,
 } from "./constants";
 
@@ -46,15 +47,13 @@ export type ServerNotice = {
   readonly payload: Uint8Array;
 };
 
-export type { PresenceConnection } from "./messages";
-
 export type PresencePage = {
   readonly segmentId: string;
-  readonly total: bigint;
-  readonly perPage: bigint;
-  readonly currentPage: bigint;
-  readonly from: bigint; // from > to possible; raw metadata preserved
-  readonly to: bigint;
+  readonly total: number;
+  readonly perPage: number;
+  readonly currentPage: number;
+  readonly from: number; // from > to possible; raw metadata preserved
+  readonly to: number;
   readonly connections: readonly PresenceConnection[];
 };
 
@@ -68,8 +67,6 @@ export type PresenceEvent = {
   readonly joined: boolean; // false = left
   readonly timestamp: bigint;
 };
-
-export type PresenceListener = (event: PresenceEvent) => void;
 
 export type ChannelState =
   | "idle"
@@ -194,11 +191,12 @@ export class Channel {
   >();
   private readonly messageInterests = new Map<string, number>();
   private readonly presenceInterests = new Map<string, number>();
+  // Issues presence query request ids. Kept per channel rather than per
+  // socket, so an id is never reused across reconnects (QUERY-01).
+  private presenceRequestCount = 0;
   private pendingPresenceQuery:
     | {
-        readonly segmentId: string;
-        readonly page: number;
-        readonly perPage: number;
+        readonly requestId: string;
         readonly resolve: (page: PresencePage) => void;
         readonly reject: (error: ChannelError) => void;
         readonly cleanup: () => void;
@@ -249,13 +247,17 @@ export class Channel {
     return this.handler;
   } // end method events
 
-  segment(segmentId?: string): Segment {
-    const resolved = segmentId ?? DEFAULT_SEGMENT_ID;
-    if (!identifierSchema.safeParse(resolved).success)
+  segment(segmentId: string): Segment {
+    if (!identifierSchema.safeParse(segmentId).success)
       throw new ConfigurationError("Invalid segment identifier.");
 
-    return new Segment(resolved, this.segmentDelegates);
+    return new Segment(segmentId, this.segmentDelegates);
   } // end method segment
+
+  // The segment every connection joins automatically (SEG-01).
+  defaultSegment(): Segment {
+    return this.segment(DEFAULT_SEGMENT_ID);
+  } // end method defaultSegment
 
   async connect(options?: { signal?: AbortSignal }): Promise<void> {
     if (
@@ -418,7 +420,7 @@ export class Channel {
 
   private addPresenceListener(
     segmentId: string,
-    listener: PresenceListener,
+    listener: (event: PresenceEvent) => void,
   ): () => void {
     let listeners = this.presenceListeners.get(segmentId);
 
@@ -514,34 +516,37 @@ export class Channel {
     if (options?.signal?.aborted)
       throw new ConnectionError("Cancelled", "Presence query cancelled.");
 
+    this.presenceRequestCount += 1;
+    const requestId = `${this.presenceRequestCount}`;
     const bytes = encodeClientCommand({
       command: "PRES_LIST",
       segmentId,
       page: options.page,
       perPage: options.perPage,
+      requestId,
     });
 
     // A synchronous send failure rejects without ever taking the query slot.
     this.sendCommand(bytes);
 
+    // A timed-out or cancelled query frees its slot and leaves the connection
+    // alone: a late reply carries the old request id and is dropped.
     return await new Promise<PresencePage>((resolve, reject) => {
       const timer = setTimeout(
         () =>
-          this.retirePendingPresenceQuery(
+          this.rejectPendingPresenceQuery(
             new ConnectionError("Timeout", "Presence query timed out."),
           ),
         this.internals.presenceQueryTimeoutMs,
       );
       const abort = (): void =>
-        this.retirePendingPresenceQuery(
+        this.rejectPendingPresenceQuery(
           new ConnectionError("Cancelled", "Presence query cancelled."),
         );
       options.signal?.addEventListener("abort", abort, { once: true });
 
       this.pendingPresenceQuery = {
-        segmentId,
-        page: options.page,
-        perPage: options.perPage,
+        requestId,
         resolve,
         reject,
         cleanup: () => {
@@ -574,20 +579,6 @@ export class Channel {
       ),
     );
   } // end method rejectPresenceQueryOnConnectionLoss
-
-  // A query that was already submitted cannot be retried or correlated:
-  // reject it and retire the connection into bounded recovery.
-  private retirePendingPresenceQuery(error: ChannelError): void {
-    const pending = this.takePendingPresenceQuery();
-    if (!pending) return;
-
-    pending.reject(error);
-    const handle = this.detachHandle();
-    // Enter reconnecting before closing so the (possibly synchronous)
-    // native close event is dropped by the state gate.
-    this.enterReconnecting();
-    handle?.close();
-  } // end method retirePendingPresenceQuery
 
   private async publishToSegment(
     segmentId: string,
@@ -671,18 +662,30 @@ export class Channel {
       case "MSG":
         this.deliverMessage(message);
         return;
-      case "ERROR":
+      case "ERROR": {
         // The server never closes the socket on an error frame; report it
-        // once, with its own name and message, and remain connected. It is
-        // uncorrelated to any command, because the protocol has no ids for
-        // that (ERR-01).
-        this.emitError(
-          new ServerError(
-            message.name,
-            LENIENT_TEXT_DECODER.decode(message.message),
-          ),
+        // once, every field as sent, and remain connected (ERR-01).
+        const error = new ServerError(
+          message.type,
+          message.subType,
+          LENIENT_TEXT_DECODER.decode(message.message),
+          message.resource,
         );
+
+        // A presence query error names its query by request id and answers
+        // that query alone. A stale id belongs to a query that was already
+        // rejected and reported, so it is dropped (QUERY-01).
+        if (message.subType === PRESENCE_LIST_COMMAND) {
+          if (message.resource === this.pendingPresenceQuery?.requestId) {
+            this.rejectPendingPresenceQuery(error);
+          }
+
+          return;
+        }
+
+        this.emitError(error);
         return;
+      }
       case "SERVER_MSG":
         this.noticeListeners.dispatch({
           timestamp: message.timestamp,
@@ -705,16 +708,9 @@ export class Channel {
     response: Extract<ServerMessage, { command: "PRES_LIST_RESPONSE" }>,
   ): void {
     const pending = this.pendingPresenceQuery;
-    // Non-matching and unsolicited responses are unsolicited protocol
-    // events; a pending query keeps waiting for its match.
-    if (
-      !pending ||
-      response.segmentId !== pending.segmentId ||
-      response.currentPage !== BigInt(pending.page) ||
-      response.perPage !== BigInt(pending.perPage)
-    ) {
-      return;
-    }
+    // A response carrying any other request id answers a query that already
+    // failed, so it is dropped; a pending query keeps waiting for its own.
+    if (!pending || response.requestId !== pending.requestId) return;
 
     this.takePendingPresenceQuery();
     pending.resolve({

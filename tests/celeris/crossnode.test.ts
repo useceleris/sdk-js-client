@@ -49,7 +49,7 @@ describe("celeris cross-node", () => {
       .segment("room")
       .presenceList({ page: 1, perPage: 25 });
     expect(fromPrimary.total).toBe(fromSecondary.total);
-    expect(fromPrimary.total >= 2n).toBe(true);
+    expect(fromPrimary.total).toBeGreaterThanOrEqual(2);
 
     await primary.close();
     await secondary.close();

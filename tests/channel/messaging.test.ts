@@ -31,6 +31,21 @@ function messageFrame(
   ).buffer;
 }
 
+// Laid out like the server's ErrorMessage.
+function errorFrame(
+  type: string,
+  message: string,
+  subType: string | null = null,
+  resource = "$-1\n",
+): ArrayBufferLike {
+  const subTypeField = subType === null ? "$-1\n" : `+${subType}\n`;
+
+  return utf8(
+    `-Err\n+${type}\n${subTypeField}$${utf8(message).length}\n${message}\n` +
+      resource,
+  ).buffer;
+}
+
 function sentFrames(): string[] {
   return sockets
     .at(-1)!
@@ -48,15 +63,18 @@ describe("segment proxies", () => {
     expect(first).toBeInstanceOf(Segment);
     expect(first).not.toBe(second);
     expect(first.segmentId).toBe("chat");
-    expect(channel.segment().segmentId).toBe("default");
+    expect(channel.defaultSegment().segmentId).toBe("default");
     expect(sockets.at(-1)!.send).not.toHaveBeenCalled();
   });
 
-  it.each(["", "bad\nid", "bad\rid", "\ud800"])(
+  // undefined stands in for an untyped caller that omits the id.
+  it.each(["", "bad\nid", "bad\rid", "\ud800", undefined])(
     "rejects invalid segment identifiers %#",
     async (identifier) => {
       const { channel } = createTestChannel();
-      expect(() => channel.segment(identifier)).toThrow(ConfigurationError);
+      expect(() => channel.segment(identifier as string)).toThrow(
+        ConfigurationError,
+      );
     },
   );
 
@@ -76,7 +94,7 @@ describe("segment proxies", () => {
 
   it("never sends SUB or UNSUB for the default segment", async () => {
     const { channel } = await establish();
-    const membership = channel.segment().subscribe();
+    const membership = channel.defaultSegment().subscribe();
     membership.cancel();
     expect(sockets.at(-1)!.send).not.toHaveBeenCalled();
   });
@@ -85,7 +103,7 @@ describe("segment proxies", () => {
 describe("publish", () => {
   it("resolves on local acceptance with exact bytes and default segment", async () => {
     const { channel } = await establish();
-    await channel.segment().publish({ payload: utf8("hi") });
+    await channel.defaultSegment().publish({ payload: utf8("hi") });
     await channel
       .segment("chat")
       .publish({ payload: utf8("yo"), messageId: "m-1" });
@@ -99,7 +117,7 @@ describe("publish", () => {
   it("rejects offline publishes without queueing", async () => {
     const idle = createTestChannel();
     await expect(
-      idle.channel.segment().publish({ payload: utf8("x") }),
+      idle.channel.defaultSegment().publish({ payload: utf8("x") }),
     ).rejects.toMatchObject({ code: "NotConnected" });
 
     const setup = await establish();
@@ -123,19 +141,21 @@ describe("publish", () => {
     controller.abort();
     await expect(
       channel
-        .segment()
+        .defaultSegment()
         .publish({ payload: utf8("x"), signal: controller.signal }),
     ).rejects.toMatchObject({ code: "Cancelled" });
 
     await expect(
-      channel.segment().publish({ payload: utf8("x"), messageId: "" }),
+      channel.defaultSegment().publish({ payload: utf8("x"), messageId: "" }),
     ).rejects.toBeInstanceOf(ConfigurationError);
     await expect(
-      channel.segment().publish({ payload: new Uint8Array(2 * 1024 * 1024) }),
+      channel
+        .defaultSegment()
+        .publish({ payload: new Uint8Array(2 * 1024 * 1024) }),
     ).rejects.toThrow("Encoded command exceeds 2 MiB.");
     expect(sockets.at(-1)!.send).not.toHaveBeenCalled();
 
-    await channel.segment().publish({ payload: new Uint8Array(0) });
+    await channel.defaultSegment().publish({ payload: new Uint8Array(0) });
     expect(sentFrames()).toEqual(["@PUB\n$7\ndefault\n$-1\n$0\n\n"]);
   });
 
@@ -146,7 +166,7 @@ describe("publish", () => {
       socket.bufferedAmount += 1;
     });
 
-    const lobby = channel.segment();
+    const lobby = channel.defaultSegment();
     for (let index = 0; index < 64; index += 1) {
       await lobby.publish({ payload: utf8("x") });
     }
@@ -171,7 +191,7 @@ describe("publish", () => {
     });
 
     await expect(
-      channel.segment().publish({ payload: utf8("x") }),
+      channel.defaultSegment().publish({ payload: utf8("x") }),
     ).rejects.toMatchObject({ code: "DeliveryUnknown" });
     expect(channel.state).toBe("connected");
     expect(errors).toEqual([]);
@@ -183,7 +203,7 @@ describe("subscriptions and flush", () => {
     const setup = createTestChannel();
     setup.channel.segment("beta").subscribe();
     setup.channel.segment("alpha").subscribe();
-    setup.channel.segment().subscribe();
+    setup.channel.defaultSegment().subscribe();
 
     await establish(setup);
     expect(sentFrames()).toEqual(["@SUB\n$4\nbeta\n", "@SUB\n$5\nalpha\n"]);
@@ -214,7 +234,7 @@ describe("subscriptions and flush", () => {
       socket.bufferedAmount += 1;
     });
     for (let index = 0; index < 64; index += 1) {
-      await channel.segment().publish({ payload: utf8("x") });
+      await channel.defaultSegment().publish({ payload: utf8("x") });
     }
 
     channel.segment("chat").subscribe();
@@ -269,7 +289,7 @@ describe("delivery and dedup", () => {
       .segment("chat")
       .onMessage((_payload, metadata) => chatMessages.push(metadata.messageId));
     channel
-      .segment()
+      .defaultSegment()
       .onMessage((_payload, metadata) =>
         lobbyMessages.push(metadata.messageId),
       );
@@ -386,6 +406,25 @@ describe("delivery and dedup", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it("skips an internal node command without reporting it", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    const delivered: string[] = [];
+    const states: string[] = [];
+    channel.events().onError((error) => errors.push(error));
+    channel.events().onStateChange((state) => states.push(state));
+    channel
+      .segment("chat")
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
+
+    sockets.at(-1)!.receive(utf8("@NODE_PUB\n+node-1\n$4\nbody\n").buffer);
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
+
+    expect(errors).toEqual([]);
+    expect(states).toEqual([]);
+    expect(delivered).toEqual(["id-1"]);
+  });
+
   it("ignores server notices and reports error frames while staying connected", async () => {
     const { channel } = await establish();
     const errors: unknown[] = [];
@@ -401,21 +440,23 @@ describe("delivery and dedup", () => {
       .receive(
         utf8('@SERVER_MSG\n:1\n$29\nSuccessfully connected to "x"\n').buffer,
       );
-    sockets.at(-1)!.receive(utf8("-Err\nRateLimitError\nslow down").buffer);
+    sockets.at(-1)!.receive(errorFrame("RateLimitError", "slow down"));
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
 
-    // The server's own name and message reach the consumer (ERR-01).
+    // The server's own fields reach the consumer (ERR-01).
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(ServerError);
     expect(errors[0]).toMatchObject({
-      code: "RateLimitError",
+      type: "RateLimitError",
+      subType: null,
       message: "slow down",
+      resource: null,
     });
     expect(channel.state).toBe("connected");
     expect(delivered).toEqual(["id-1"]);
   });
 
-  it("reports a permission denial as its server error, uncorrelated", async () => {
+  it("reports a permission denial with the command and segment it names", async () => {
     const { channel } = await establish();
     const errors: unknown[] = [];
     const delivered: string[] = [];
@@ -424,15 +465,21 @@ describe("delivery and dedup", () => {
       .segment("chat")
       .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
 
-    // A denied publish resolves locally; the error arrives uncorrelated.
+    // A denied publish resolves locally; the error arrives afterwards.
     await channel.segment("chat").publish({ payload: utf8("x") });
-    sockets.at(-1)!.receive(utf8("-Err\nPermissionDeniedError\ndenied").buffer);
+    sockets
+      .at(-1)!
+      .receive(
+        errorFrame("PermissionDeniedError", "denied", "PUB", "$4\nchat\n"),
+      );
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({
-      code: "PermissionDeniedError",
+      type: "PermissionDeniedError",
+      subType: "PUB",
       message: "denied",
+      resource: "chat",
     });
     expect(channel.state).toBe("connected");
     expect(delivered).toEqual(["id-1"]);
@@ -444,50 +491,56 @@ describe("delivery and dedup", () => {
     "PermissionDeniedError",
     "RateLimitError",
     "MessageSizeLimitError",
-    // A name a newer server adds still reaches the consumer.
+    "InternalError",
+    // A type a newer server adds still reaches the consumer.
     "SomeFutureError",
-  ])("surfaces a %s frame with its name and message", async (name) => {
+  ])("surfaces a %s frame with every field", async (type) => {
     const { channel } = await establish();
     const errors: unknown[] = [];
 
     channel.events().onError((error) => errors.push(error));
-    sockets.at(-1)!.receive(utf8(`-Err\n${name}\nwhat happened`).buffer);
+    sockets
+      .at(-1)!
+      .receive(errorFrame(type, "what happened", "SUB", "*2\n+a\n:7\n"));
 
     expect(errors).toHaveLength(1);
     expect(errors[0]).toBeInstanceOf(ServerError);
-    expect(errors[0]).toMatchObject({ code: name, message: "what happened" });
+    expect(errors[0]).toMatchObject({
+      type,
+      subType: "SUB",
+      message: "what happened",
+      resource: ["a", 7n],
+    });
     expect(channel.state).toBe("connected");
   });
 
   it("surfaces the server's message-size rejection exactly as sent", async () => {
-    // The real frame: name, message, and no trailing LF.
     const { channel } = await establish();
     const errors: unknown[] = [];
     const message =
       "Message size limit exceeded; payload size = 65537 bytes; size limit = 64 KB";
 
     channel.events().onError((error) => errors.push(error));
-    sockets
-      .at(-1)!
-      .receive(utf8(`-Err\nMessageSizeLimitError\n${message}`).buffer);
+    sockets.at(-1)!.receive(errorFrame("MessageSizeLimitError", message));
 
-    expect(errors[0]).toMatchObject({ code: "MessageSizeLimitError", message });
+    expect(errors[0]).toMatchObject({ type: "MessageSizeLimitError", message });
   });
 
   it("never throws while delivering a malformed server message", async () => {
     const { channel } = await establish();
     const errors: unknown[] = [];
     const frame = new Uint8Array([
-      ...utf8("-Err\nSendError\nbad "),
+      ...utf8("-Err\n+SendError\n$-1\n$6\nbad "),
       0xff,
       0xfe,
+      ...utf8("\n$-1\n"),
     ]);
 
     channel.events().onError((error) => errors.push(error));
     sockets.at(-1)!.receive(frame.buffer);
 
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ code: "SendError" });
+    expect(errors[0]).toMatchObject({ type: "SendError" });
     expect((errors[0] as Error).message.startsWith("bad ")).toBe(true);
     expect(channel.state).toBe("connected");
   });

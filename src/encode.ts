@@ -60,7 +60,8 @@ class CommandEncoder {
   ): void {
     this.appendText("@PRES_LIST\n");
     this.appendBulk(command.segmentId);
-    this.appendText(`:${command.page}\n:${command.perPage}\n`);
+    this.appendText(`;${command.page}\n;${command.perPage}\n`);
+    this.appendBulk(command.requestId);
   }
 
   private writeSegmentCommand(

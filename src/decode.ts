@@ -1,13 +1,16 @@
-import { ProtocolError } from "./errors";
+import { ProtocolError, type ServerErrorResource } from "./errors";
 import type { PresenceConnection, ServerMessage } from "./messages";
 import {
   MAXIMUM_COMMAND_NAME_BYTES,
   MAXIMUM_DEPTH,
   MAXIMUM_ERROR_NAME_BYTES,
   MAXIMUM_FRAGMENTS,
-  MAXIMUM_INTEGER,
-  MAXIMUM_INTEGER_LINE_BYTES,
-  MINIMUM_INTEGER,
+  MAXIMUM_INTEGER32,
+  MAXIMUM_INTEGER32_LINE_BYTES,
+  MAXIMUM_INTEGER64,
+  MAXIMUM_INTEGER64_LINE_BYTES,
+  MINIMUM_INTEGER32,
+  MINIMUM_INTEGER64,
   STRICT_TEXT_DECODER,
 } from "./constants";
 
@@ -101,9 +104,17 @@ export class MessageDecoder {
     }
   } // end method readText
 
-  private readDecimal(field: string, fieldStartOffset: number): bigint {
+  // The decimal grammar every numeric field shares. The range defaults to
+  // signed 64-bit, which also bounds bulk and array lengths.
+  private readDecimal(
+    field: string,
+    fieldStartOffset: number,
+    maximumLineBytes = MAXIMUM_INTEGER64_LINE_BYTES,
+    minimum = MINIMUM_INTEGER64,
+    maximum = MAXIMUM_INTEGER64,
+  ): bigint {
     const text = this.readText(
-      this.readLine(field, fieldStartOffset, MAXIMUM_INTEGER_LINE_BYTES),
+      this.readLine(field, fieldStartOffset, maximumLineBytes),
       field,
       fieldStartOffset,
     );
@@ -125,30 +136,53 @@ export class MessageDecoder {
       );
     }
 
-    if (value < MINIMUM_INTEGER || value > MAXIMUM_INTEGER) {
-      throw new ProtocolError(
-        "Integer exceeds signed-64 range.",
-        field,
-        fieldStartOffset,
-      );
+    if (value < minimum || value > maximum) {
+      throw new ProtocolError("Integer out of range.", field, fieldStartOffset);
     }
 
     return value;
   } // end method readDecimal
 
-  private readInteger(field: string): bigint {
+  private readInteger64(field: string): bigint {
     const fieldStartOffset = this.offset;
 
     if (this.readMarker(field) !== ":".charCodeAt(0)) {
       throw new ProtocolError(
-        "Expected integer marker.",
+        "Expected Integer64 marker.",
         field,
         fieldStartOffset,
       );
     }
 
     return this.readDecimal(field, fieldStartOffset);
-  } // end method readInteger
+  } // end method readInteger64
+
+  private readInteger32(field: string): number {
+    const fieldStartOffset = this.offset;
+
+    if (this.readMarker(field) !== ";".charCodeAt(0)) {
+      throw new ProtocolError(
+        "Expected Integer32 marker.",
+        field,
+        fieldStartOffset,
+      );
+    }
+
+    return this.readInteger32Digits(field, fieldStartOffset);
+  } // end method readInteger32
+
+  // A 32-bit value is exact as a number, so it leaves the decoder as one.
+  private readInteger32Digits(field: string, fieldStartOffset: number): number {
+    return Number(
+      this.readDecimal(
+        field,
+        fieldStartOffset,
+        MAXIMUM_INTEGER32_LINE_BYTES,
+        BigInt(MINIMUM_INTEGER32),
+        BigInt(MAXIMUM_INTEGER32),
+      ),
+    );
+  } // end method readInteger32Digits
 
   private readBytes(field: string): Uint8Array | null {
     const fieldStartOffset = this.offset;
@@ -247,14 +281,14 @@ export class MessageDecoder {
     return text;
   } // end method readNullableIdentifier
 
-  private readPayload(): Uint8Array {
+  private readPayload(field = "payload"): Uint8Array {
     const fieldStartOffset = this.offset;
-    const payload = this.readBytes("payload");
+    const payload = this.readBytes(field);
 
     if (payload === null) {
       throw new ProtocolError(
         "Payload cannot be null.",
-        "payload",
+        field,
         fieldStartOffset,
       );
     }
@@ -324,7 +358,7 @@ export class MessageDecoder {
       connections.push({
         tokenReference: this.readIdentifier("tokenReference"),
         connectionId: this.readIdentifier("connectionId"),
-        timestamp: this.readInteger("timestamp"),
+        timestamp: this.readInteger64("timestamp"),
       });
     }
 
@@ -338,7 +372,7 @@ export class MessageDecoder {
       case "*".charCodeAt(0):
         return this.readMessageArray(depth, tail);
       case "-".charCodeAt(0):
-        return this.readErrorMessage(depth, tail);
+        return this.readErrorMessage(depth);
       case "@".charCodeAt(0):
         return this.readCommandMessage(depth, tail);
       default:
@@ -361,19 +395,8 @@ export class MessageDecoder {
     return { command: "ARRAY", messages };
   } // end method readMessageArray
 
-  private readErrorMessage(depth: number, tail: boolean): ServerMessage {
+  private readErrorMessage(depth: number): ServerMessage {
     const fieldStartOffset = this.offset - 1;
-    // Errors have no length or final delimiter, so their content is the rest
-    // of the transport message. That boundary is unambiguous only when every
-    // enclosing array is consuming its final element — which is how the
-    // server's output batching actually wraps errors (C8 observation, D-002).
-    if (depth !== 0 && !tail) {
-      throw new ProtocolError(
-        "Error inside array has ambiguous boundaries.",
-        "error",
-        fieldStartOffset,
-      );
-    }
 
     if (
       this.readText(
@@ -389,21 +412,112 @@ export class MessageDecoder {
       );
     }
 
-    const nameOffset = this.offset;
-    const name = this.readText(
-      this.readLine("errorName", nameOffset, MAXIMUM_ERROR_NAME_BYTES),
-      "errorName",
-      nameOffset,
-    );
-    if (!/^[A-Za-z]/.test(name) || /[^A-Za-z0-9]/.test(name)) {
-      throw new ProtocolError("Invalid error name.", "errorName", nameOffset);
+    // Every field is self-delimiting, so an error may sit anywhere in a batch.
+    return {
+      command: "ERROR",
+      type: this.readErrorType(),
+      subType: this.readErrorSubType(),
+      message: this.readPayload("errorMessage"),
+      resource: this.readResource(depth),
+    };
+  } // end method readErrorMessage
+
+  private readErrorType(): string {
+    const fieldStartOffset = this.offset;
+
+    if (this.readMarker("errorType") !== "+".charCodeAt(0)) {
+      throw new ProtocolError(
+        "Expected simple string marker.",
+        "errorType",
+        fieldStartOffset,
+      );
     }
 
-    const message = new Uint8Array(this.bytes.subarray(this.offset));
-    this.offset = this.bytes.length;
+    return this.readErrorName("errorType", fieldStartOffset);
+  } // end method readErrorType
 
-    return { command: "ERROR", name, message };
-  } // end method readErrorMessage
+  private readErrorSubType(): string | null {
+    const fieldStartOffset = this.offset;
+
+    switch (this.readMarker("errorSubType")) {
+      case "+".charCodeAt(0):
+        return this.readErrorName("errorSubType", fieldStartOffset);
+      case "$".charCodeAt(0):
+        if (this.readDecimal("errorSubType", fieldStartOffset) === -1n) {
+          return null;
+        }
+
+        throw new ProtocolError(
+          "Sub type must be a simple string or null.",
+          "errorSubType",
+          fieldStartOffset,
+        );
+      default:
+        throw new ProtocolError(
+          "Sub type must be a simple string or null.",
+          "errorSubType",
+          fieldStartOffset,
+        );
+    }
+  } // end method readErrorSubType
+
+  // Error types and sub types are names such as PermissionDeniedError and
+  // PRES_LIST: bounded, and restricted to letters, digits and underscores.
+  private readErrorName(field: string, fieldStartOffset: number): string {
+    const name = this.readText(
+      this.readLine(field, fieldStartOffset, MAXIMUM_ERROR_NAME_BYTES),
+      field,
+      fieldStartOffset,
+    );
+
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(name)) {
+      throw new ProtocolError("Invalid error name.", field, fieldStartOffset);
+    }
+
+    return name;
+  } // end method readErrorName
+
+  // Any single fragment the error's type and sub type define: null, a string,
+  // an Integer64 (bigint), an Integer32 (number), or an array of these.
+  private readResource(depth: number): ServerErrorResource {
+    const fieldStartOffset = this.offset;
+
+    switch (this.readMarker("resource")) {
+      case "+".charCodeAt(0):
+        return this.readText(
+          this.readLine("resource", fieldStartOffset),
+          "resource",
+          fieldStartOffset,
+        );
+      case "$".charCodeAt(0): {
+        const bytes = this.readBulkBytes("resource", fieldStartOffset);
+
+        return bytes === null
+          ? null
+          : this.readText(bytes, "resource", fieldStartOffset);
+      }
+      case ":".charCodeAt(0):
+        return this.readDecimal("resource", fieldStartOffset);
+      case ";".charCodeAt(0):
+        return this.readInteger32Digits("resource", fieldStartOffset);
+      case "*".charCodeAt(0): {
+        const length = this.readArrayLength(depth + 1, "resource", true);
+        const items: ServerErrorResource[] = [];
+
+        for (let index = 0; index < length; index += 1) {
+          items.push(this.readResource(depth + 1));
+        }
+
+        return items;
+      }
+      default:
+        throw new ProtocolError(
+          "Unexpected resource marker.",
+          "resource",
+          fieldStartOffset,
+        );
+    }
+  } // end method readResource
 
   private readCommandMessage(depth: number, tail: boolean): ServerMessage {
     const fieldStartOffset = this.offset - 1;
@@ -434,8 +548,7 @@ export class MessageDecoder {
   ): ServerMessage {
     // A command this version does not know carries an unknown number of
     // fields, so its end is only knowable when it runs to the end of the
-    // transport message — the same boundary rule errors follow (D-002).
-    // Newer servers may add commands; skipping them keeps this client
+    // transport message. Newer servers may add commands; skipping them keeps this client
     // working instead of killing its connection (DECODE-01).
     if (depth !== 0 && !tail) {
       throw new ProtocolError(
@@ -456,7 +569,7 @@ export class MessageDecoder {
       tokenReference: this.readIdentifier("tokenReference"),
       segmentId: this.readIdentifier("segmentId"),
       messageId: this.readNullableIdentifier("messageId"),
-      timestamp: this.readInteger("timestamp"),
+      timestamp: this.readInteger64("timestamp"),
       payload: this.readPayload(),
     };
   } // end method readPeerMessage
@@ -464,7 +577,7 @@ export class MessageDecoder {
   private readServerNotice(): ServerMessage {
     return {
       command: "SERVER_MSG",
-      timestamp: this.readInteger("timestamp"),
+      timestamp: this.readInteger64("timestamp"),
       payload: this.readPayload(),
     };
   } // end method readServerNotice
@@ -474,11 +587,11 @@ export class MessageDecoder {
     const tokenReference = this.readIdentifier("tokenReference");
     const connectionId = this.readIdentifier("connectionId");
     const eventOffset = this.offset;
-    const event = this.readInteger("event");
+    const event = this.readInteger32("event");
 
     // A join/leave flag, not metadata: narrowed here rather than passed
     // through raw, and any other value is not a flag this client knows.
-    if (event !== 0n && event !== 1n) {
+    if (event !== 0 && event !== 1) {
       throw new ProtocolError(
         "Presence event must be 0 or 1.",
         "event",
@@ -491,8 +604,8 @@ export class MessageDecoder {
       segmentId,
       tokenReference,
       connectionId,
-      joined: event === 1n,
-      timestamp: this.readInteger("timestamp"),
+      joined: event === 1,
+      timestamp: this.readInteger64("timestamp"),
     };
   } // end method readPresenceNotification
 
@@ -500,11 +613,12 @@ export class MessageDecoder {
     return {
       command: "PRES_LIST_RESPONSE",
       segmentId: this.readIdentifier("segmentId"),
-      total: this.readInteger("total"),
-      perPage: this.readInteger("perPage"),
-      currentPage: this.readInteger("currentPage"),
-      from: this.readInteger("from"),
-      to: this.readInteger("to"),
+      requestId: this.readIdentifier("requestId"),
+      total: this.readInteger32("total"),
+      perPage: this.readInteger32("perPage"),
+      currentPage: this.readInteger32("currentPage"),
+      from: this.readInteger32("from"),
+      to: this.readInteger32("to"),
       connections: this.readConnections(depth),
     };
   } // end method readPresenceResponse

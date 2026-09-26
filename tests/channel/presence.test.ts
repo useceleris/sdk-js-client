@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ConfigurationError } from "../../src/errors";
+import { ConfigurationError, ServerError } from "../../src/errors";
 import { utf8 } from "../fixtures/codec-vectors";
 import { createTestChannel, flushMicrotasks } from "../helpers/channel";
 import { sockets, useTestWebSockets } from "../helpers/websocket";
@@ -18,6 +18,7 @@ async function establish(setup = createTestChannel()) {
 
 function presenceResponseFrame(options: {
   segmentId?: string;
+  requestId?: string;
   total?: number;
   perPage?: number;
   currentPage?: number;
@@ -27,6 +28,7 @@ function presenceResponseFrame(options: {
 }): ArrayBufferLike {
   const {
     segmentId = "chat",
+    requestId = "1",
     total = 1,
     perPage = 25,
     currentPage = 1,
@@ -42,8 +44,17 @@ function presenceResponseFrame(options: {
     .join("");
 
   return utf8(
-    `@PRES_LIST_RESPONSE\n+${segmentId}\n:${total}\n:${perPage}\n` +
-      `:${currentPage}\n:${from}\n:${to}\n*${connections.length}\n${entries}`,
+    `@PRES_LIST_RESPONSE\n+${segmentId}\n$${requestId.length}\n${requestId}\n` +
+      `;${total}\n;${perPage}\n` +
+      `;${currentPage}\n;${from}\n;${to}\n*${connections.length}\n${entries}`,
+  ).buffer;
+}
+
+// An error answering the presence query with this request id.
+function presenceErrorFrame(type: string, requestId: string): ArrayBufferLike {
+  return utf8(
+    `-Err\n+${type}\n+PRES_LIST\n$6\nfailed\n` +
+      `$${requestId.length}\n${requestId}\n`,
   ).buffer;
 }
 
@@ -56,7 +67,7 @@ function presenceNotifyFrame(
 ): ArrayBufferLike {
   return utf8(
     `@PRES_NOTIFY\n+${segmentId}\n+${tokenReference}\n+${connectionId}\n` +
-      `:${joined ? 1 : 0}\n:${timestamp}\n`,
+      `;${joined ? 1 : 0}\n:${timestamp}\n`,
   ).buffer;
 }
 
@@ -88,7 +99,7 @@ describe("presence interests", () => {
 
   it("sends presence commands for the default segment too", async () => {
     const { channel } = await establish();
-    const watching = channel.segment().subscribePresence();
+    const watching = channel.defaultSegment().subscribePresence();
     watching.cancel();
     expect(sentFrames()).toEqual([
       "@PRES_SUB\n$7\ndefault\n",
@@ -129,7 +140,7 @@ describe("presence interests", () => {
 
   it("flushes messages first then presence in registration order", async () => {
     const setup = createTestChannel();
-    setup.channel.segment().subscribePresence();
+    setup.channel.defaultSegment().subscribePresence();
     setup.channel.segment("beta").subscribe();
     setup.channel.segment("alpha").subscribePresence();
     const dropped = setup.channel.segment("gone").subscribePresence();
@@ -160,7 +171,7 @@ describe("presence interests", () => {
       socket.bufferedAmount += 1;
     });
     for (let index = 0; index < 64; index += 1) {
-      await channel.segment().publish({ payload: utf8("x") });
+      await channel.defaultSegment().publish({ payload: utf8("x") });
     }
 
     channel.segment("chat").subscribePresence();
@@ -172,13 +183,13 @@ describe("presence interests", () => {
 });
 
 describe("presence queries", () => {
-  it("resolves a matching response with raw bigint metadata", async () => {
+  it("resolves a matching response with its raw metadata", async () => {
     const { channel } = await establish();
     const pending = channel.segment("chat").presenceList({
       page: 1,
       perPage: 25,
     });
-    expect(sentFrames()).toEqual(["@PRES_LIST\n$4\nchat\n:1\n:25\n"]);
+    expect(sentFrames()).toEqual(["@PRES_LIST\n$4\nchat\n;1\n;25\n$1\n1\n"]);
 
     sockets.at(-1)!.receive(
       presenceResponseFrame({
@@ -192,11 +203,11 @@ describe("presence queries", () => {
     );
     await expect(pending).resolves.toEqual({
       segmentId: "chat",
-      total: 2n,
-      perPage: 25n,
-      currentPage: 1n,
-      from: 1n,
-      to: 2n,
+      total: 2,
+      perPage: 25,
+      currentPage: 1,
+      from: 1,
+      to: 2,
       connections: [
         {
           tokenReference: "user",
@@ -228,8 +239,8 @@ describe("presence queries", () => {
       }),
     );
     await expect(pending).resolves.toMatchObject({
-      from: 26n,
-      to: 1n,
+      from: 26,
+      to: 1,
       connections: [],
     });
   });
@@ -263,7 +274,7 @@ describe("presence queries", () => {
     const recovered = channel
       .segment("chat")
       .presenceList({ page: 1, perPage: 25 });
-    sockets.at(-1)!.receive(presenceResponseFrame({}));
+    sockets.at(-1)!.receive(presenceResponseFrame({ requestId: "2" }));
     await expect(recovered).resolves.toMatchObject({ segmentId: "chat" });
   });
 
@@ -296,41 +307,40 @@ describe("presence queries", () => {
     await expect(next).resolves.toMatchObject({ segmentId: "chat" });
   });
 
-  it("times out, retires the connection, and recovers", async () => {
-    const setup = await establish();
-    setup.channel.segment("chat").subscribe();
+  it("times out without disturbing the connection and drops the late reply", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
     const states: string[] = [];
-    setup.channel.events().onStateChange((state) => states.push(state));
+    channel.events().onError((error) => errors.push(error));
+    channel.events().onStateChange((state) => states.push(state));
 
-    const pending = setup.channel
-      .segment("chat")
-      .presenceList({ page: 1, perPage: 25 });
+    const pending = channel.segment("chat").presenceList({
+      page: 1,
+      perPage: 25,
+    });
     const rejection = expect(pending).rejects.toMatchObject({
       code: "Timeout",
     });
-    const retiredSocket = sockets.at(-1)!;
 
     await vi.advanceTimersByTimeAsync(9_999);
-    expect(states).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     await rejection;
-    expect(states[0]).toBe("reconnecting");
-    expect(retiredSocket.close).toHaveBeenCalled();
 
-    // A zero-delay timer scheduled inside a timer callback needs a nonzero
-    // advance under fake timers.
-    await vi.advanceTimersByTimeAsync(1);
-    await flushMicrotasks();
-    sockets.at(-1)!.open();
-    await flushMicrotasks();
-    expect(setup.channel.state).toBe("connected");
-    expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
+    // A late reply carries its own query's request id, so it cannot be mistaken for
+    // the next query's (QUERY-01): the connection stays up.
+    expect(states).toEqual([]);
+    expect(sockets.at(-1)!.close).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
 
-    const next = setup.channel
-      .segment("chat")
-      .presenceList({ page: 1, perPage: 25 });
-    sockets.at(-1)!.receive(presenceResponseFrame({}));
-    await expect(next).resolves.toMatchObject({ segmentId: "chat" });
+    const next = channel.segment("chat").presenceList({ page: 1, perPage: 25 });
+    sockets.at(-1)!.receive(presenceResponseFrame({ requestId: "1" }));
+    sockets.at(-1)!.receive(presenceErrorFrame("InternalError", "1"));
+    sockets
+      .at(-1)!
+      .receive(presenceResponseFrame({ requestId: "2", total: 7 }));
+
+    await expect(next).resolves.toMatchObject({ total: 7 });
+    expect(errors).toEqual([]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -348,7 +358,7 @@ describe("presence queries", () => {
     await rejection;
   });
 
-  it("retires the connection on abort after send", async () => {
+  it("frees the slot on abort after send and stays connected", async () => {
     const { channel } = await establish();
     const controller = new AbortController();
     const pending = channel
@@ -360,30 +370,88 @@ describe("presence queries", () => {
 
     controller.abort();
     await rejection;
-    expect(channel.state).toBe("reconnecting");
-    expect(vi.getTimerCount()).toBe(1); // only the retry timer remains
+    expect(channel.state).toBe("connected");
+    expect(vi.getTimerCount()).toBe(0);
+
+    const next = channel.segment("chat").presenceList({ page: 1, perPage: 25 });
+    sockets.at(-1)!.receive(presenceResponseFrame({ requestId: "1" }));
+    sockets
+      .at(-1)!
+      .receive(presenceResponseFrame({ requestId: "2", total: 3 }));
+    await expect(next).resolves.toMatchObject({ total: 3 });
   });
 
-  it("ignores unsolicited, mismatched, and late responses", async () => {
+  it("matches a response by request id alone", async () => {
     const { channel } = await establish();
-    sockets.at(-1)!.receive(presenceResponseFrame({}));
+    sockets.at(-1)!.receive(presenceResponseFrame({ requestId: "9" }));
     expect(channel.state).toBe("connected");
 
     const pending = channel.segment("chat").presenceList({
       page: 2,
       perPage: 50,
     });
-    sockets.at(-1)!.receive(presenceResponseFrame({ segmentId: "other" }));
-    sockets.at(-1)!.receive(presenceResponseFrame({ currentPage: 1 }));
-    sockets
-      .at(-1)!
-      .receive(presenceResponseFrame({ currentPage: 2, perPage: 25 }));
+    sockets.at(-1)!.receive(presenceResponseFrame({ requestId: "0" }));
+    sockets.at(-1)!.receive(presenceResponseFrame({ requestId: "10" }));
 
+    // The id alone decides; the other fields are the server's to report.
     sockets
       .at(-1)!
-      .receive(presenceResponseFrame({ currentPage: 2, perPage: 50 }));
-    await expect(pending).resolves.toMatchObject({ currentPage: 2n });
+      .receive(presenceResponseFrame({ requestId: "1", currentPage: 7 }));
+    await expect(pending).resolves.toMatchObject({ currentPage: 7 });
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["InternalError", "PermissionDeniedError"])(
+    "rejects at once on a %s naming the query",
+    async (type) => {
+      const { channel } = await establish();
+      const errors: unknown[] = [];
+      channel.events().onError((error) => errors.push(error));
+
+      const pending = channel.segment("chat").presenceList({
+        page: 1,
+        perPage: 25,
+      });
+      sockets.at(-1)!.receive(presenceErrorFrame(type, "1"));
+
+      const rejected = await pending.catch((error: unknown) => error);
+      expect(rejected).toBeInstanceOf(ServerError);
+      expect(rejected).toMatchObject({
+        type,
+        subType: "PRES_LIST",
+        message: "failed",
+        resource: "1",
+      });
+
+      // Reported once, to the caller; the connection is untouched.
+      expect(errors).toEqual([]);
+      expect(channel.state).toBe("connected");
+      expect(vi.getTimerCount()).toBe(0);
+
+      const next = channel
+        .segment("chat")
+        .presenceList({ page: 1, perPage: 25 });
+      sockets.at(-1)!.receive(presenceResponseFrame({ requestId: "2" }));
+      await expect(next).resolves.toMatchObject({ segmentId: "chat" });
+    },
+  );
+
+  it("drops a presence query error for any other request id", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    channel.events().onError((error) => errors.push(error));
+
+    sockets.at(-1)!.receive(presenceErrorFrame("InternalError", "1"));
+
+    const pending = channel.segment("chat").presenceList({
+      page: 1,
+      perPage: 25,
+    });
+    sockets.at(-1)!.receive(presenceErrorFrame("InternalError", "0"));
+    sockets.at(-1)!.receive(presenceResponseFrame({ requestId: "1" }));
+
+    await expect(pending).resolves.toMatchObject({ segmentId: "chat" });
+    expect(errors).toEqual([]);
   });
 
   it("rejects the pending query on connection loss and on close", async () => {
@@ -423,8 +491,10 @@ describe("presence queries", () => {
     ).rejects.toMatchObject({ code: "DeliveryUnknown" });
     expect(channel.state).toBe("connected");
 
+    // The failed send may still have reached the server, so its request id
+    // is spent and the next query uses a new one.
     const next = channel.segment("chat").presenceList({ page: 1, perPage: 25 });
-    socket.receive(presenceResponseFrame({}));
+    socket.receive(presenceResponseFrame({ requestId: "2" }));
     await expect(next).resolves.toMatchObject({ segmentId: "chat" });
     expect(vi.getTimerCount()).toBe(0);
   });

@@ -8,12 +8,12 @@ export {
   type MessageListener,
   type ServerNotice,
   type PresencePage,
-  type PresenceConnection,
   type PresenceEvent,
-  type PresenceListener,
   type Subscription,
   type RecoveryEvent,
 } from "./channel";
+
+export type { PresenceConnection } from "./messages";
 
 export { Segment } from "./segment";
 export {
@@ -38,5 +38,6 @@ export {
   ProtocolError,
   ServerError,
   type ConnectionErrorCode,
-  type ServerErrorCode,
+  type ServerErrorType,
+  type ServerErrorResource,
 } from "./errors";

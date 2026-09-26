@@ -37,7 +37,7 @@ it.each([
   },
   {
     wire: "@SERVER_MSG\n:9223372036854775808\n",
-    message: "Integer exceeds signed-64 range.",
+    message: "Integer out of range.",
     field: "timestamp",
     offset: 12,
   },
@@ -55,9 +55,27 @@ it.each([
   },
   {
     wire: "@SERVER_MSG\n+1\n",
-    message: "Expected integer marker.",
+    message: "Expected Integer64 marker.",
     field: "timestamp",
     offset: 12,
+  },
+  {
+    wire: "@PRES_LIST_RESPONSE\n+s\n$1\n1\n;2147483648\n",
+    message: "Integer out of range.",
+    field: "total",
+    offset: 28,
+  },
+  {
+    wire: "@PRES_LIST_RESPONSE\n+s\n$1\n1\n;000000000001\n",
+    message: "Line exceeds byte limit.",
+    field: "total",
+    offset: 28,
+  },
+  {
+    wire: "@PRES_LIST_RESPONSE\n+s\n$1\n1\n:1\n",
+    message: "Expected Integer32 marker.",
+    field: "total",
+    offset: 28,
   },
   {
     wire: "@SERVER_MSG\n:1\n$9\nx\n",
@@ -114,23 +132,40 @@ it.each([
     offset: 0,
   },
   {
-    // A tail-position error is valid (C8, D-002); a non-final one is not.
-    wire: "*2\n-Err\nParserError\nsecret\n@SERVER_MSG\n:1\n$0\n\n",
-    message: "Error inside array has ambiguous boundaries.",
-    field: "error",
-    offset: 3,
-  },
-  {
     wire: "-Bad\n",
     message: "Invalid error header.",
     field: "error",
     offset: 0,
   },
   {
-    wire: "-Err\nBad Name\nsecret",
+    wire: "-Err\n+Bad Name\n$-1\n$6\nsecret\n$-1\n",
     message: "Invalid error name.",
-    field: "errorName",
+    field: "errorType",
     offset: 5,
+  },
+  {
+    wire: "-Err\nParserError\nsecret",
+    message: "Expected simple string marker.",
+    field: "errorType",
+    offset: 5,
+  },
+  {
+    wire: "-Err\n+ParserError\n$3\nSUB\n$6\nsecret\n$-1\n",
+    message: "Sub type must be a simple string or null.",
+    field: "errorSubType",
+    offset: 18,
+  },
+  {
+    wire: "-Err\n+ParserError\n$-1\n$-1\n$-1\n",
+    message: "Payload cannot be null.",
+    field: "errorMessage",
+    offset: 22,
+  },
+  {
+    wire: "-Err\n+ParserError\n$-1\n$6\nsecret\n@X\n",
+    message: "Unexpected resource marker.",
+    field: "resource",
+    offset: 32,
   },
 ])("reports $field at byte $offset: $message", ({ wire, ...expected }) => {
   expect(() => decodeServerMessage(utf8(wire))).toThrow(

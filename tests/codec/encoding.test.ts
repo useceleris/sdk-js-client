@@ -18,6 +18,7 @@ describe("command encoding", () => {
     null,
     {},
     { command: "NODE_PUB", segmentId: "s" },
+    { command: "NODE_FUTURE", segmentId: "s" },
     ...["", "a\n", "a\r", 1, null].map((segmentId) => ({
       command: "SUB",
       segmentId,
@@ -125,7 +126,20 @@ describe("identifier encoding isolation", () => {
         { command: "UNSUB", segmentId: identifier },
         { command: "PRES_SUB", segmentId: identifier },
         { command: "PRES_UNSUB", segmentId: identifier },
-        { command: "PRES_LIST", segmentId: identifier, page: 1, perPage: 1 },
+        {
+          command: "PRES_LIST",
+          segmentId: identifier,
+          page: 1,
+          perPage: 1,
+          requestId: "1",
+        },
+        {
+          command: "PRES_LIST",
+          segmentId: "s",
+          page: 1,
+          perPage: 1,
+          requestId: identifier,
+        },
         { command: "PUB", segmentId: identifier, payload: new Uint8Array() },
         {
           command: "PUB",

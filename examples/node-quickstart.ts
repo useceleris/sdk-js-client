@@ -68,6 +68,4 @@ const page = await chat.presenceList({ page: 1, perPage: 10 });
 membership.cancel();
 await channel.close();
 
-console.log(
-  `example: ok delivered=${delivered.length} present=${page.total.toString()}`,
-);
+console.log(`example: ok delivered=${delivered.length} present=${page.total}`);

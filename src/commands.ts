@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAXIMUM_INTEGER32 } from "./constants";
 
 export const identifierSchema = z
   .string()
@@ -21,8 +22,9 @@ export const clientCommandSchema = z.discriminatedUnion("command", [
   z.object({
     command: z.literal("PRES_LIST"),
     ...segmentFields,
-    page: z.int().min(1).max(2147483647),
+    page: z.int().min(1).max(MAXIMUM_INTEGER32),
     perPage: z.int().min(1).max(100),
+    requestId: identifierSchema,
   }),
 ]);
 

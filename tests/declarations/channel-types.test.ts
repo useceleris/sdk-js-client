@@ -6,18 +6,18 @@ import type {
   ChannelState,
   MessageMetadata,
   MessageListener,
-  PresenceConnection,
   PresenceEvent,
-  PresenceListener,
   PresencePage,
   RecoveryEvent,
   ServerNotice,
   Subscription,
 } from "../../src/channel";
+import type { PresenceConnection } from "../../src/messages";
 import type {
   ConnectionErrorCode,
   ServerError,
-  ServerErrorCode,
+  ServerErrorResource,
+  ServerErrorType,
 } from "../../src/errors";
 import type { Segment } from "../../src/segment";
 import type { ClientOptions } from "../../src/client";
@@ -82,8 +82,9 @@ describe("channel type contracts", () => {
     >().toEqualTypeOf<MessageListener>();
 
     expectTypeOf<Channel["segment"]>().toEqualTypeOf<
-      (segmentId?: string) => Segment
+      (segmentId: string) => Segment
     >();
+    expectTypeOf<Channel["defaultSegment"]>().toEqualTypeOf<() => Segment>();
     expectTypeOf<Segment["segmentId"]>().toEqualTypeOf<string>();
     expectTypeOf<Segment["subscribe"]>().returns.toEqualTypeOf<Subscription>();
     expectTypeOf<ReturnType<Segment["onMessage"]>>().toEqualTypeOf<
@@ -111,12 +112,8 @@ describe("channel type contracts", () => {
       readonly timestamp: bigint;
     }>();
 
-    expectTypeOf<PresenceListener>().toEqualTypeOf<
-      (event: PresenceEvent) => void
-    >();
-
     expectTypeOf<Segment["onPresence"]>().toEqualTypeOf<
-      (listener: PresenceListener) => () => void
+      (listener: (event: PresenceEvent) => void) => () => void
     >();
 
     expectTypeOf<PresenceConnection>().toEqualTypeOf<{
@@ -127,11 +124,11 @@ describe("channel type contracts", () => {
 
     expectTypeOf<PresencePage>().toEqualTypeOf<{
       readonly segmentId: string;
-      readonly total: bigint;
-      readonly perPage: bigint;
-      readonly currentPage: bigint;
-      readonly from: bigint;
-      readonly to: bigint;
+      readonly total: number;
+      readonly perPage: number;
+      readonly currentPage: number;
+      readonly from: number;
+      readonly to: number;
       readonly connections: readonly PresenceConnection[];
     }>();
 
@@ -193,19 +190,30 @@ describe("channel type contracts", () => {
     >();
   });
 
-  it("mirrors the server's error names one for one (ERR-01)", () => {
-    expectTypeOf<ServerErrorCode>().toEqualTypeOf<
+  it("mirrors the server's error frame field for field (ERR-01)", () => {
+    expectTypeOf<ServerErrorType>().toEqualTypeOf<
       | "ParserError"
       | "SendError"
       | "PermissionDeniedError"
       | "RateLimitError"
       | "MessageSizeLimitError"
+      | "InternalError"
     >();
 
-    // Known names autocomplete; a name a newer server adds still type-checks.
-    expectTypeOf<"RateLimitError">().toMatchTypeOf<ServerError["code"]>();
-    expectTypeOf<"SomeFutureError">().toMatchTypeOf<ServerError["code"]>();
+    // Known types autocomplete; a type a newer server adds still type-checks.
+    expectTypeOf<"RateLimitError">().toMatchTypeOf<ServerError["type"]>();
+    expectTypeOf<"SomeFutureError">().toMatchTypeOf<ServerError["type"]>();
+    expectTypeOf<ServerError["subType"]>().toEqualTypeOf<string | null>();
     expectTypeOf<ServerError["message"]>().toEqualTypeOf<string>();
+    expectTypeOf<
+      ServerError["resource"]
+    >().toEqualTypeOf<ServerErrorResource>();
+    expectTypeOf<ServerErrorResource>().toEqualTypeOf<
+      null | string | number | bigint | readonly ServerErrorResource[]
+    >();
+
+    // Server errors are shaped unlike the SDK's own: no code to confuse.
+    expectTypeOf<ServerError>().not.toHaveProperty("code");
   });
 
   it("rejects mutation of readonly event fields", () => {
@@ -229,8 +237,14 @@ function verifyReadonly(
   // @ts-expect-error tokenReference is readonly
   metadata.tokenReference = "changed";
   // @ts-expect-error total is readonly
-  page.total = 0n;
+  page.total = 0;
   // @ts-expect-error timestamp is readonly
   notice.timestamp = 0n;
   void error;
 } // end function verifyReadonly
+
+function verifySegmentIdRequired(channel: Channel): void {
+  // @ts-expect-error a segment id is required; defaultSegment() names "default"
+  channel.segment();
+} // end function verifySegmentIdRequired
+void verifySegmentIdRequired;

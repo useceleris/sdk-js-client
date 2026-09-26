@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ServerError } from "../../src/index";
 import {
   connectedChannel,
   nextError,
@@ -117,13 +118,13 @@ describe("celeris messaging", () => {
     const receiver = await connectedChannel(reference);
     const seen: DeliveredMessage[] = [];
     receiver
-      .segment()
+      .defaultSegment()
       .onMessage((payload, metadata) => seen.push({ payload, ...metadata }));
     await settle();
 
-    await publisher.segment().publish({ payload: utf8("lobby") });
+    await publisher.defaultSegment().publish({ payload: utf8("lobby") });
     await nextMessage(
-      receiver.segment(),
+      receiver.defaultSegment(),
       (message) => text(message.payload) === "lobby",
       "default-segment delivery",
     );
@@ -159,7 +160,7 @@ describe("celeris messaging", () => {
 
   // Needs the qualification app on a plan with message_size_limit_in_kb of
   // at least 1024, which the CI seed guarantees.
-  it("round-trips a full 1024 KiB payload past the old 1 MiB bound", async () => {
+  it("round-trips a full 1024 KiB payload, larger than 1 MiB once framed", async () => {
     const reference = uniqueChannelReference("huge");
     const publisher = await connectedChannel(reference);
     const receiver = await connectedChannel(reference);
@@ -202,7 +203,8 @@ describe("celeris messaging", () => {
 
     const rejection = await nextError(
       channel,
-      (error) => error.code === "MessageSizeLimitError",
+      (error) =>
+        error instanceof ServerError && error.type === "MessageSizeLimitError",
       "the MessageSizeLimitError frame",
       20_000,
     );
@@ -213,7 +215,7 @@ describe("celeris messaging", () => {
     await channel.close();
   });
 
-  it("reports a PermissionDeniedError for a read-only token's publish, uncorrelated", async () => {
+  it("reports a PermissionDeniedError for a read-only token's publish, naming the segment", async () => {
     const reference = uniqueChannelReference("perm");
     const readOnly = await connectedChannel(reference, {
       tokenPermission: { read: true, write: false },
@@ -225,11 +227,13 @@ describe("celeris messaging", () => {
     await readOnly.segment("chat").publish({ payload: utf8("denied") });
     const denial = await nextError(
       readOnly,
-      (error) => error.code === "PermissionDeniedError",
+      (error) =>
+        error instanceof ServerError && error.type === "PermissionDeniedError",
       "the PermissionDeniedError frame",
     );
 
     expect(denial.message.length).toBeGreaterThan(0);
+    expect(denial).toMatchObject({ subType: "PUB", resource: "chat" });
     expect(readOnly.state).toBe("connected");
     await readOnly.close();
   });

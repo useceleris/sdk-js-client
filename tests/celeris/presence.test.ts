@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ServerError } from "../../src/index";
 import {
   connectedChannel,
   nextMessage,
@@ -61,9 +62,9 @@ describe("celeris presence", () => {
       .segment("room")
       .presenceList({ page: 1, perPage: 10 });
     expect(page.segmentId).toBe("room");
-    expect(page.total >= 2n).toBe(true);
+    expect(page.total).toBeGreaterThanOrEqual(2);
     expect(page.connections.length).toBeGreaterThanOrEqual(2);
-    expect(page.from).toBe(1n);
+    expect(page.from).toBe(1);
     for (const connection of page.connections) {
       expect(connection.connectionId.length).toBeGreaterThan(0);
       expect(typeof connection.timestamp).toBe("bigint");
@@ -77,6 +78,35 @@ describe("celeris presence", () => {
 
     await first.close();
     await second.close();
+  });
+
+  it("rejects a write-only token's presence query at once, naming the query", async () => {
+    const reference = uniqueChannelReference("pdeny");
+    const writeOnly = await connectedChannel(reference, {
+      tokenPermission: { read: false, write: true },
+    });
+    const errors: unknown[] = [];
+    writeOnly.events().onError((error) => errors.push(error));
+
+    // Presence needs read access. The denial names the query by its request
+    // id, so the caller hears it at once instead of waiting out the deadline.
+    const started = Date.now();
+    const rejection = await writeOnly
+      .segment("room")
+      .presenceList({ page: 1, perPage: 10 })
+      .catch((error: unknown) => error);
+
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(rejection).toBeInstanceOf(ServerError);
+    expect(rejection).toMatchObject({
+      type: "PermissionDeniedError",
+      subType: "PRES_LIST",
+      resource: "1",
+    });
+    expect(errors).toEqual([]);
+    expect(writeOnly.state).toBe("connected");
+
+    await writeOnly.close();
   });
 
   it("stops notices after presence cancellation while membership persists", async () => {

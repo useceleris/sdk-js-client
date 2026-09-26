@@ -14,9 +14,12 @@ it.each(["\n", "\r\n"])(
     ).toHaveProperty("timestamp", 1n);
     expect(
       decodeServerMessage(
-        utf8(`-Err${newline}${"A".repeat(64)}${newline}message`),
+        utf8(
+          `-Err${newline}+${"A".repeat(64)}${newline}+${"B".repeat(64)}${newline}` +
+            `$1${newline}m${newline}$-1${newline}`,
+        ),
       ),
-    ).toHaveProperty("name", "A".repeat(64));
+    ).toMatchObject({ type: "A".repeat(64), subType: "B".repeat(64) });
   },
 );
 

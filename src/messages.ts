@@ -1,3 +1,5 @@
+import type { ServerErrorResource } from "./errors";
+
 export type PresenceConnection = {
   readonly tokenReference: string;
   readonly connectionId: string;
@@ -21,11 +23,12 @@ export type ServerMessage =
   | {
       readonly command: "PRES_LIST_RESPONSE";
       readonly segmentId: string;
-      readonly total: bigint;
-      readonly perPage: bigint;
-      readonly currentPage: bigint;
-      readonly from: bigint;
-      readonly to: bigint;
+      readonly requestId: string;
+      readonly total: number;
+      readonly perPage: number;
+      readonly currentPage: number;
+      readonly from: number;
+      readonly to: number;
       readonly connections: readonly PresenceConnection[];
     }
   | {
@@ -38,8 +41,10 @@ export type ServerMessage =
     }
   | {
       readonly command: "ERROR";
-      readonly name: string;
+      readonly type: string;
+      readonly subType: string | null;
       readonly message: Uint8Array;
+      readonly resource: ServerErrorResource;
     }
   | { readonly command: "ARRAY"; readonly messages: readonly ServerMessage[] }
   // A command this version does not know. Skipped, never surfaced (DECODE-01).

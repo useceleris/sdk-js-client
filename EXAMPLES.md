@@ -35,7 +35,7 @@ const client = createClient({
 });
 ```
 
-`createClient` performs no network work. `client.channel()` and `channel.segment()` are also side-effect free; nothing connects until `connect()`.
+`createClient` performs no network work. `client.channel()`, `channel.segment(id)` and `channel.defaultSegment()` are also side-effect free; nothing connects until `connect()`.
 
 ## Connect and observe lifecycle
 
@@ -60,7 +60,7 @@ events.onError((error) => {
   // Async failures: socket errors, server error frames, and frames this
   // version could not decode. Only a socket error costs the connection —
   // an undecodable frame is dropped on its own.
-  console.error(error.code, error.message);
+  console.error(error.name, error.message);
 });
 
 await channel.connect(); // opens the socket; you are now a member of "default"
@@ -79,7 +79,7 @@ await channel.close(); // ≤5 s graceful budget; channel and its segments are d
 
 ```ts
 // Proxies over the SAME connection — no new sockets here.
-const lobby = channel.segment(); // the "default" segment; already a member
+const lobby = channel.defaultSegment(); // the "default" segment; already a member
 const chat = channel.segment("chat");
 const chatAgain = channel.segment("chat"); // same segment, same shared interest
 
@@ -155,7 +155,7 @@ const watching = chat.subscribePresence();
 // connect-time auto-join grants message membership only, never a presence
 // subscription, so PRES_SUB IS sent here — unlike SUB, which the client
 // never emits for "default".
-const lobbyPresence = channel.segment().subscribePresence();
+const lobbyPresence = channel.defaultSegment().subscribePresence();
 
 // Join and leave arrive as typed, segment-tagged events while a presence
 // interest is held.
@@ -174,8 +174,11 @@ const stopNotices = channel.events().onNotice((notice) => {
   console.log("notice:", new TextDecoder().decode(notice.payload));
 });
 
-// Paginated snapshot: one in-flight query per CHANNEL, 10 s deadline.
+// Paginated snapshot: one in-flight query per CHANNEL, 10 s deadline. A
+// query the server refuses or cannot answer rejects at once with a
+// ServerError (sub type "PRES_LIST"); a timeout never drops the connection.
 const page = await chat.presenceList({ page: 1, perPage: 50 });
+console.log(`${page.total} connected`); // counts and page figures are numbers
 for (const connection of page.connections) {
   console.log(connection.tokenReference, connection.connectionId);
 }
@@ -219,14 +222,15 @@ try {
   // ConfigurationError means the call site is wrong; fix it.
 }
 
-// Errors the SERVER sends arrive as ServerError through events().onError:
-// the server's own name as `code`, its own text as `message`. They are
-// uncorrelated to any command (the protocol has no acks), and the channel
-// stays connected.
+// Errors the SERVER sends arrive as ServerError through events().onError,
+// every field as the server sent it: `type`, `subType` (the command the error
+// answers, or null), `message`, and `resource` (what that command names, such
+// as the segment). The channel stays connected. A failed presence query is
+// the exception: it rejects presenceList() instead of reaching onError.
 channel.events().onError((error) => {
   if (!(error instanceof ServerError)) return;
 
-  switch (error.code) {
+  switch (error.type) {
     case "PermissionDeniedError": // the token lacks access to what it tried
       break;
     case "MessageSizeLimitError": // a publish exceeded your plan's size cap
@@ -235,12 +239,14 @@ channel.events().onError((error) => {
       break;
     case "ParserError": // the server could not parse a command
     case "SendError": // the server failed to deliver
+    case "InternalError": // a server-side fault, not caused by you
       break;
-    default: // a name a newer server added
+    default: // a type a newer server added
       break;
   }
 
-  console.warn(error.code, error.message); // e.g. "size limit = 64 KB"
+  // e.g. PermissionDeniedError SUB "chat" "Token does not have access …"
+  console.warn(error.type, error.subType, error.resource, error.message);
 });
 ```
 
@@ -329,9 +335,9 @@ Reconnects request fresh credentials with a replay lookback covering the outage 
 
 Restoration treats the default segment the way connecting does. Named segments are rejoined with a fresh SUB on the new socket; the default segment needs none, because the server auto-joins it again on the new connection, so a listener on it keeps receiving with no action from the caller. A default presence interest _is_ re-sent, since presence was never part of that auto-join.
 
-## Working with bigint values
+## Working with timestamps
 
-`MessageMetadata.timestamp` and all presence metadata are `bigint` (exact signed-64 wire values). `JSON.stringify` throws on bigint — serialize them explicitly as decimal strings:
+Timestamps — `MessageMetadata.timestamp`, `PresenceEvent.timestamp`, `PresenceConnection.timestamp` and `ServerNotice.timestamp` — are `bigint`, the exact signed-64 wire value. Every other figure, including a presence page's counts, is a plain `number`. `JSON.stringify` throws on bigint, so serialize timestamps explicitly as decimal strings, or convert one to a `Date` with `new Date(Number(timestamp))`:
 
 ```ts
 const serialized = JSON.stringify(

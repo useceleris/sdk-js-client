@@ -27,12 +27,21 @@ export const MAXIMUM_COMMAND_NAME_BYTES = 18;
 
 export const MAXIMUM_ERROR_NAME_BYTES = 64;
 
-// "-9223372036854775808", the widest signed 64-bit integer.
-export const MAXIMUM_INTEGER_LINE_BYTES = 20;
+// Integer64 (`:`) carries timestamps; it is also the range of bulk and array
+// lengths. "-9223372036854775808" is its widest value.
+export const MAXIMUM_INTEGER64_LINE_BYTES = 20;
 
-export const MINIMUM_INTEGER = -(1n << 63n);
+export const MINIMUM_INTEGER64 = -(1n << 63n);
 
-export const MAXIMUM_INTEGER = (1n << 63n) - 1n;
+export const MAXIMUM_INTEGER64 = (1n << 63n) - 1n;
+
+// Integer32 (`;`) carries every other integer, and decodes to a number.
+// "-2147483648" is its widest value.
+export const MAXIMUM_INTEGER32_LINE_BYTES = 11;
+
+export const MINIMUM_INTEGER32 = -2_147_483_648;
+
+export const MAXIMUM_INTEGER32 = 2_147_483_647;
 
 // Connection defaults. Consumers do not configure where Celeris lives;
 // overriding the base URL is for local stacks and other deployments
@@ -44,6 +53,9 @@ export const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 export const DEFAULT_PRESENCE_QUERY_TIMEOUT_MS = 10_000;
 
 export const DEFAULT_SEGMENT_ID = "default";
+
+// The command a presence query error names as its sub type (QUERY-01).
+export const PRESENCE_LIST_COMMAND = "PRES_LIST";
 
 // Recovery.
 export const MAXIMUM_RETRIES = 10;

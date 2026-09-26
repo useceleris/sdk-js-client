@@ -4,7 +4,7 @@ import { decodeServerMessage } from "../../src/decode";
 import { encodeClientCommand } from "../../src/encode";
 import type { ServerMessage } from "../../src/messages";
 
-test("codec contracts keep byte buffers and bigint values runtime-neutral", () => {
+test("codec contracts keep byte buffers and integer widths runtime-neutral", () => {
   expectTypeOf<
     ReturnType<typeof encodeClientCommand>
   >().toEqualTypeOf<Uint8Array>();
@@ -14,9 +14,16 @@ test("codec contracts keep byte buffers and bigint values runtime-neutral", () =
   expectTypeOf<
     Extract<ClientCommand, { command: "PUB" }>["payload"]
   >().toEqualTypeOf<Uint8Array>();
+  // Integer64 (timestamps) decodes to bigint; Integer32 to number.
   expectTypeOf<
     Extract<ServerMessage, { command: "MSG" }>["timestamp"]
   >().toEqualTypeOf<bigint>();
+  expectTypeOf<
+    Extract<ServerMessage, { command: "PRES_LIST_RESPONSE" }>["total"]
+  >().toEqualTypeOf<number>();
+  expectTypeOf<
+    Extract<ClientCommand, { command: "PRES_LIST" }>["page"]
+  >().toEqualTypeOf<number>();
 });
 
 // Compiled by tooling typecheck; never executed or exported by the package.

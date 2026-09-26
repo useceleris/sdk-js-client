@@ -38,7 +38,7 @@ describe("server decoding", () => {
       ),
     ).toThrow(ProtocolError);
   });
-  it("decodes messages beyond the former 1 MiB bound (LIMIT-01)", () => {
+  it("decodes messages larger than 1 MiB (LIMIT-01)", () => {
     // A prime-plan delivery: a full 1024 KiB payload plus its framing.
     const payloadLength = 1024 * 1024;
     const header = utf8(`@MSG\n+user\n+chat\n+msg_1\n:1\n$${payloadLength}\n`);

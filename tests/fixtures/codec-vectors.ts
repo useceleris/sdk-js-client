@@ -1,7 +1,8 @@
 import type { ClientCommand } from "../../src/commands";
 import type { ServerMessage } from "../../src/messages";
 
-// Vector revision 1: realtime@9b67cb6634a9c24754e75df25e2cbc2df1b26f26.
+// Vector revision 2: realtime@cfa901fa73b2bd26abcc46c2f5ce47879dd4dc75 plus the
+// uncommitted C14 error frame and presence request ids.
 // Hand-authored from Rust layouts; no SDK encoder creates expectations.
 export const utf8 = (text: string): Uint8Array =>
   new TextEncoder().encode(text);
@@ -61,8 +62,14 @@ export const encodingVectors: {
   },
   {
     name: "presence first page",
-    command: { command: "PRES_LIST", segmentId: "chat", page: 1, perPage: 1 },
-    expected: utf8("@PRES_LIST\n$4\nchat\n:1\n:1\n"),
+    command: {
+      command: "PRES_LIST",
+      segmentId: "chat",
+      page: 1,
+      perPage: 1,
+      requestId: "1",
+    },
+    expected: utf8("@PRES_LIST\n$4\nchat\n;1\n;1\n$1\n1\n"),
   },
   {
     name: "presence last allowed page",
@@ -71,8 +78,9 @@ export const encodingVectors: {
       segmentId: "chat",
       page: 2147483647,
       perPage: 100,
+      requestId: "識-9",
     },
-    expected: utf8("@PRES_LIST\n$4\nchat\n:2147483647\n:100\n"),
+    expected: utf8("@PRES_LIST\n$4\nchat\n;2147483647\n;100\n$5\n識-9\n"),
   },
 ];
 
@@ -175,16 +183,17 @@ export const decodingVectors: {
   {
     name: "presence connections",
     bytes: utf8(
-      "@PRES_LIST_RESPONSE\n+chat\n:1\n:25\n:1\n:1\n:1\n*1\n*3\n+user\n+connection\n:123\n",
+      "@PRES_LIST_RESPONSE\n+chat\n$1\n7\n;1\n;25\n;1\n;1\n;1\n*1\n*3\n+user\n+connection\n:123\n",
     ),
     expected: {
       command: "PRES_LIST_RESPONSE",
       segmentId: "chat",
-      total: 1n,
-      perPage: 25n,
-      currentPage: 1n,
-      from: 1n,
-      to: 1n,
+      requestId: "7",
+      total: 1,
+      perPage: 25,
+      currentPage: 1,
+      from: 1,
+      to: 1,
       connections: [
         { tokenReference: "user", connectionId: "connection", timestamp: 123n },
       ],
@@ -192,21 +201,22 @@ export const decodingVectors: {
   },
   {
     name: "presence empty",
-    bytes: utf8("@PRES_LIST_RESPONSE\n+chat\n:0\n:25\n:1\n:0\n:0\n*0\n"),
+    bytes: utf8("@PRES_LIST_RESPONSE\n+chat\n$1\n8\n;0\n;25\n;1\n;0\n;0\n*0\n"),
     expected: {
       command: "PRES_LIST_RESPONSE",
       segmentId: "chat",
-      total: 0n,
-      perPage: 25n,
-      currentPage: 1n,
-      from: 0n,
-      to: 0n,
+      requestId: "8",
+      total: 0,
+      perPage: 25,
+      currentPage: 1,
+      from: 0,
+      to: 0,
       connections: [],
     },
   },
   {
     name: "presence notification join",
-    bytes: utf8("@PRES_NOTIFY\n+chat\n+user\n+connection\n:1\n:123\n"),
+    bytes: utf8("@PRES_NOTIFY\n+chat\n+user\n+connection\n;1\n:123\n"),
     expected: {
       command: "PRES_NOTIFY",
       segmentId: "chat",
@@ -218,7 +228,7 @@ export const decodingVectors: {
   },
   {
     name: "presence notification leave",
-    bytes: utf8("@PRES_NOTIFY\n+chat\n+user\n+connection\n:0\n:124\n"),
+    bytes: utf8("@PRES_NOTIFY\n+chat\n+user\n+connection\n;0\n:124\n"),
     expected: {
       command: "PRES_NOTIFY",
       segmentId: "chat",
@@ -247,52 +257,123 @@ export const decodingVectors: {
     },
   },
   {
+    // NODE_* commands are internal between server nodes. The SDK does not
+    // recognise any of them, so one that arrives is skipped like any other
+    // unknown command.
+    name: "internal node command ignored",
+    bytes: utf8("@NODE_PUB\n+node-1\n$4\nbody\n"),
+    expected: { command: "IGNORED" },
+  },
+  {
+    name: "internal node command ignored in tail position",
+    bytes: utf8("*2\n@SERVER_MSG\n:1\n$0\n\n@NODE_PUB\n+node-1\n"),
+    expected: {
+      command: "ARRAY",
+      messages: [
+        { command: "SERVER_MSG", timestamp: 1n, payload: new Uint8Array() },
+        { command: "IGNORED" },
+      ],
+    },
+  },
+  {
+    name: "any NODE_ command ignored",
+    bytes: utf8("@NODE_FUTURE\n+a\n"),
+    expected: { command: "IGNORED" },
+  },
+  {
     name: "presence past last page",
-    bytes: utf8("@PRES_LIST_RESPONSE\n+chat\n:1\n:25\n:2\n:26\n:1\n*0\n"),
+    bytes: utf8(
+      "@PRES_LIST_RESPONSE\n+chat\n$1\n9\n;1\n;25\n;2\n;26\n;1\n*0\n",
+    ),
     expected: {
       command: "PRES_LIST_RESPONSE",
       segmentId: "chat",
-      total: 1n,
-      perPage: 25n,
-      currentPage: 2n,
-      from: 26n,
-      to: 1n,
+      requestId: "9",
+      total: 1,
+      perPage: 25,
+      currentPage: 2,
+      from: 26,
+      to: 1,
       connections: [],
     },
   },
   {
-    name: "whole-message error",
-    bytes: utf8("-Err\nPermissionDeniedError\ntext\n-Err\nmore"),
+    name: "error without sub type or resource",
+    bytes: utf8("-Err\n+RateLimitError\n$-1\n$4\nslow\n$-1\n"),
     expected: {
       command: "ERROR",
-      name: "PermissionDeniedError",
-      message: utf8("text\n-Err\nmore"),
+      type: "RateLimitError",
+      subType: null,
+      message: utf8("slow"),
+      resource: null,
     },
   },
   {
-    // The server's output batching wraps errors as the final array element
-    // (C8 live observation); the tail position is boundary-unambiguous.
-    name: "batched single error",
-    bytes: utf8("*1\n-Err\nPermissionDeniedError\ndenied"),
+    // The message is length-prefixed, so it may contain anything, including
+    // text that looks like another error.
+    name: "error message containing frame text",
+    bytes: utf8(
+      "-Err\n+PermissionDeniedError\n+SUB\n$14\ntext\n-Err\nmore\n$4\nroom\n",
+    ),
+    expected: {
+      command: "ERROR",
+      type: "PermissionDeniedError",
+      subType: "SUB",
+      message: utf8("text\n-Err\nmore"),
+      resource: "room",
+    },
+  },
+  {
+    name: "presence query error carrying its request id",
+    bytes: utf8(
+      "-Err\n+InternalError\n+PRES_LIST\n$27\nError getting presence data\n$1\n3\n",
+    ),
+    expected: {
+      command: "ERROR",
+      type: "InternalError",
+      subType: "PRES_LIST",
+      message: utf8("Error getting presence data"),
+      resource: "3",
+    },
+  },
+  {
+    name: "error resource of every shape",
+    bytes: utf8(
+      "-Err\n+FutureError\n+PUB\n$1\nx\n*5\n+a\n:-5\n;7\n$-1\n*1\n$1\nb\n",
+    ),
+    expected: {
+      command: "ERROR",
+      type: "FutureError",
+      subType: "PUB",
+      message: utf8("x"),
+      resource: ["a", -5n, 7, null, ["b"]],
+    },
+  },
+  {
+    // Errors are self-delimiting, so they may sit anywhere in a batch, and two
+    // batched errors decode as two.
+    name: "batched errors before other messages",
+    bytes: utf8(
+      "*3\n-Err\n+PermissionDeniedError\n+PRES_SUB\n$2\nno\n$4\nroom\n-Err\n+PermissionDeniedError\n+PRES_LIST\n$2\nno\n$1\n4\n@SERVER_MSG\n:1\n$2\nok\n",
+    ),
     expected: {
       command: "ARRAY",
       messages: [
         {
           command: "ERROR",
-          name: "PermissionDeniedError",
-          message: utf8("denied"),
+          type: "PermissionDeniedError",
+          subType: "PRES_SUB",
+          message: utf8("no"),
+          resource: "room",
         },
-      ],
-    },
-  },
-  {
-    name: "error as final batched element",
-    bytes: utf8("*2\n@SERVER_MSG\n:1\n$2\nok\n-Err\nRateLimitError\nslow"),
-    expected: {
-      command: "ARRAY",
-      messages: [
+        {
+          command: "ERROR",
+          type: "PermissionDeniedError",
+          subType: "PRES_LIST",
+          message: utf8("no"),
+          resource: "4",
+        },
         { command: "SERVER_MSG", timestamp: 1n, payload: utf8("ok") },
-        { command: "ERROR", name: "RateLimitError", message: utf8("slow") },
       ],
     },
   },
@@ -309,6 +390,7 @@ export const malformedVectors = [
   // transport message; anywhere else its boundary is unknowable (DECODE-01).
   "*2\n@FUTURE_COMMAND\n+a\n@SERVER_MSG\n:1\n$0\n\n",
   "*2\n*1\n@FUTURE_COMMAND\n+a\n@SERVER_MSG\n:1\n$0\n\n",
+  "*2\n@NODE_PUB\n+node-1\n@SERVER_MSG\n:1\n$0\n\n",
   "+hello\n",
   ":1\n",
   "$-1\n",
@@ -327,12 +409,41 @@ export const malformedVectors = [
   "@MSG\n+u\n+s\n+\n:1\n$0\n\n",
   "@MSG\n+u\rX\n+s\n$-1\n:1\n$0\n\n",
   "@MSG\n$3\nu\ns\n+s\n$-1\n:1\n$0\n\n",
-  "*2\n-Err\nParserError\none-Err\nParserError\ntwo",
-  "*2\n-Err\nParserError\nnot-last\n@SERVER_MSG\n:1\n$0\n\n",
-  "*2\n*1\n-Err\nParserError\ninner-not-tail\n@SERVER_MSG\n:1\n$0\n\n",
-  "-Other\nParserError\nmessage",
-  "-Err\nBad\rName\nmessage",
-  "@PRES_LIST_RESPONSE\n+s\n:0\n:1\n:1\n:0\n:0\n*1\n*2\n+u\n+c\n",
+  // A line-based layout without field markers.
+  "-Err\nParserError\nmessage",
+  "-Other\n+ParserError\n$-1\n$1\nm\n$-1\n",
+  // Missing fields.
+  "-Err\n+ParserError\n$-1\n$1\nm\n",
+  "-Err\n+ParserError\n$-1\n",
+  // The type must be a simple-string name.
+  "-Err\n$11\nParserError\n$-1\n$1\nm\n$-1\n",
+  "-Err\n+Bad\rName\n$-1\n$1\nm\n$-1\n",
+  "-Err\n+Bad-Name\n$-1\n$1\nm\n$-1\n",
+  "-Err\n+ParserErrorParserErrorParserErrorParserErrorParserErrorParserError\n$-1\n$1\nm\n$-1\n",
+  // The sub type must be a name or null.
+  "-Err\n+ParserError\n+PRES LIST\n$1\nm\n$-1\n",
+  "-Err\n+ParserError\n$3\nSUB\n$1\nm\n$-1\n",
+  "-Err\n+ParserError\n:1\n$1\nm\n$-1\n",
+  // The message cannot be null.
+  "-Err\n+ParserError\n$-1\n$-1\n$-1\n",
+  // The resource must be a known fragment, within the depth limit.
+  "-Err\n+ParserError\n$-1\n$1\nm\n@SERVER_MSG\n",
+  "-Err\n+ParserError\n$-1\n$1\nm\n" + "*1\n".repeat(40) + "$-1\n",
+  "@PRES_LIST_RESPONSE\n+s\n$1\n1\n;0\n;1\n;1\n;0\n;0\n*1\n*2\n+u\n+c\n",
+  // Presence figures and the join/leave flag are Integer32: signed 32-bit,
+  // decimal digits only, with the `;` marker.
+  ...[
+    ";2147483648\n",
+    ";-2147483649\n",
+    ";000000000001\n",
+    ";+1\n",
+    "; 1\n",
+    ";1.0\n",
+    ":1\n",
+  ].map(
+    (total) => `@PRES_LIST_RESPONSE\n+s\n$1\n1\n${total};1\n;1\n;0\n;0\n*0\n`,
+  ),
+  "@PRES_NOTIFY\n+s\n+u\n+c\n:1\n:123\n",
 ].map(utf8);
 malformedVectors.push(
   new Uint8Array([...utf8("@MSG\n+"), 255, ...utf8("\n+s\n$-1\n:1\n$0\n\n")]),

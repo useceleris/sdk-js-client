@@ -46,7 +46,7 @@ describe("recovery restoration", () => {
     setup.channel.segment("beta").subscribe();
     setup.channel.segment("alpha").subscribe();
     const cancelledMessages = setup.channel.segment("gone").subscribe();
-    setup.channel.segment().subscribePresence();
+    setup.channel.defaultSegment().subscribePresence();
     setup.channel.segment("alpha").subscribePresence();
     const cancelledPresence = setup.channel
       .segment("brief")
@@ -102,10 +102,10 @@ describe("recovery restoration", () => {
   it("keeps the default segment delivering without restoring it", async () => {
     const setup = await establish();
     const delivered: string[] = [];
-    setup.channel.segment().subscribe();
+    setup.channel.defaultSegment().subscribe();
     setup.channel.segment("chat").subscribe();
     setup.channel
-      .segment()
+      .defaultSegment()
       .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
 
     await reconnect();

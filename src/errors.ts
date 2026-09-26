@@ -39,21 +39,30 @@ export class ConnectionError extends Error {
   }
 }
 
-// The server's own error names, one per RealtimeError variant (ERR-01).
-export type ServerErrorCode =
+// The server's own error types, one per RealtimeError variant (ERR-01).
+export type ServerErrorType =
   | "ParserError"
   | "SendError"
   | "PermissionDeniedError"
   | "RateLimitError"
-  | "MessageSizeLimitError";
+  | "MessageSizeLimitError"
+  | "InternalError";
 
-// An error frame from the server: its name and its message, both exactly as
-// sent. The code stays open to names a newer server may add, so an error this
-// version does not know still reaches the consumer instead of vanishing.
+// Whatever an error's type and sub type define it to carry, such as the
+// segment a denial refers to. Recursive, so it needs a name.
+export type ServerErrorResource =
+  null | string | number | bigint | readonly ServerErrorResource[];
+
+// An error frame from the server, every field exactly as sent. The type stays
+// open to types a newer server may add, so an error this version does not
+// know still reaches the consumer instead of vanishing.
 export class ServerError extends Error {
   constructor(
-    readonly code: ServerErrorCode | (string & {}),
+    readonly type: ServerErrorType | (string & {}),
+    // The command the error answers, e.g. "PRES_LIST"; null when none.
+    readonly subType: string | null,
     message: string,
+    readonly resource: ServerErrorResource,
   ) {
     super(message);
     this.name = "ServerError";

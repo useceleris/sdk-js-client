@@ -53,3 +53,9 @@ export const DEFAULT_SEGMENT_ID = "default";
 Import them by name; do not redeclare a value locally or repeat it as a bare literal. A value that appears in two places drifts: the connect timeout was once written in two files, and the replay lookback cap in two others. Keep each constant's explanation as a comment beside it.
 
 Zod schemas are not constants in this sense. They are validation definitions, so they stay beside the code that uses them, in camelCase — though a limit a schema enforces still comes from `src/constants.ts`.
+
+## Imports and the public surface
+
+Import a type or value from the module that defines it. Never re-export from an internal module to save another file an import: a pass-through hides where a type actually lives and gives it two import paths.
+
+`src/index.ts` is the only file that re-exports. Anything public is exported there, directly from its defining module.
