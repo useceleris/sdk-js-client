@@ -21,7 +21,9 @@ export function jsonPayload(value: unknown): Uint8Array {
   }
 
   if (serialized === undefined)
-    throw new ConfigurationError("Value is not JSON-serializable.");
+    throw new ConfigurationError(
+      "Value is not JSON-serializable: it is circular, contains a bigint, or is undefined, a function or a symbol.",
+    );
 
   return TEXT_ENCODER.encode(serialized);
 } // end function jsonPayload
@@ -30,7 +32,9 @@ export function readText(payload: Uint8Array): string {
   try {
     return STRICT_TEXT_DECODER.decode(payload);
   } catch {
-    throw new ConfigurationError("Payload is not valid UTF-8.");
+    throw new ConfigurationError(
+      "Payload is not valid UTF-8, so it cannot be read as text.",
+    );
   }
 } // end function readText
 
@@ -42,7 +46,8 @@ export function readJson<T>(payload: Uint8Array): T {
   try {
     return JSON.parse(text) as T;
   } catch {
-    throw new ConfigurationError("Payload is not valid JSON.");
+    // JSON.parse's own message quotes the text, so it is not passed on.
+    throw new ConfigurationError("Payload is valid UTF-8 but not valid JSON.");
   }
 } // end function readJson
 

@@ -41,7 +41,7 @@ export class MessageDecoder {
 
     if (this.fragments > MAXIMUM_FRAGMENTS) {
       throw new ProtocolError(
-        "Fragment limit exceeded.",
+        `Server message has more than ${MAXIMUM_FRAGMENTS} fragments.`,
         field,
         fieldStartOffset,
       );
@@ -71,7 +71,7 @@ export class MessageDecoder {
 
         if (contentEnd - lineStart > maximumLength) {
           throw new ProtocolError(
-            "Line exceeds byte limit.",
+            `Line exceeds its ${maximumLength}-byte limit.`,
             field,
             fieldStartOffset,
           );
@@ -82,7 +82,7 @@ export class MessageDecoder {
 
       if (this.offset - lineStart > maximumLength + 1) {
         throw new ProtocolError(
-          "Line exceeds byte limit.",
+          `Line exceeds its ${maximumLength}-byte limit.`,
           field,
           fieldStartOffset,
         );
@@ -137,7 +137,11 @@ export class MessageDecoder {
     }
 
     if (value < minimum || value > maximum) {
-      throw new ProtocolError("Integer out of range.", field, fieldStartOffset);
+      throw new ProtocolError(
+        `Integer is outside ${minimum} to ${maximum}.`,
+        field,
+        fieldStartOffset,
+      );
     }
 
     return value;
@@ -305,7 +309,7 @@ export class MessageDecoder {
 
     if (depth >= MAXIMUM_DEPTH) {
       throw new ProtocolError(
-        "Array nesting limit exceeded.",
+        `Arrays are nested deeper than ${MAXIMUM_DEPTH} levels.`,
         field,
         fieldStartOffset,
       );
@@ -331,7 +335,7 @@ export class MessageDecoder {
 
     if (length > BigInt(MAXIMUM_FRAGMENTS - this.fragments)) {
       throw new ProtocolError(
-        "Array length exceeds fragment budget.",
+        `Array length exceeds the ${MAXIMUM_FRAGMENTS}-fragment budget.`,
         field,
         fieldStartOffset,
       );

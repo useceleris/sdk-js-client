@@ -25,7 +25,7 @@ describe("text payloads", () => {
     expect(() => readText(new Uint8Array([0x80]))).toThrow(
       expect.objectContaining({
         code: "Configuration",
-        message: "Payload is not valid UTF-8.",
+        message: "Payload is not valid UTF-8, so it cannot be read as text.",
       }),
     );
   });
@@ -48,7 +48,8 @@ describe("json payloads", () => {
     expect(() => jsonPayload(value)).toThrow(
       expect.objectContaining({
         code: "Configuration",
-        message: "Value is not JSON-serializable.",
+        message:
+          "Value is not JSON-serializable: it is circular, contains a bigint, or is undefined, a function or a symbol.",
       }),
     );
   });
@@ -75,7 +76,7 @@ describe("json payloads", () => {
     expect(() => readJson(utf8("{ not json"))).toThrow(
       expect.objectContaining({
         code: "Configuration",
-        message: "Payload is not valid JSON.",
+        message: "Payload is valid UTF-8 but not valid JSON.",
       }),
     );
   });

@@ -19,7 +19,7 @@ Reach for a named design pattern only when a concrete, present requirement deman
 - Small modules with one responsibility; the file name states it.
 - Delete code in the same change that obsoletes it; never keep dead branches "just in case".
 - Every public identifier traces to a specification requirement or a recorded decision (DEV-01, REV-01, SEG-01, ...).
-- Errors carry fixed safe messages and stable codes; never interpolate received values or attach raw causes.
+- Errors carry stable codes and messages that name what failed, where and which rule or limit it broke (a field path, an expected format, a bound). Never interpolate received values, input values, secrets or server text, and never attach raw causes.
 - Tests are deterministic (injected clocks/randomness, fake timers), grouped by behavior, and catch package-owned defects only.
 - Before completion, review the full diff for anything deletable without weakening behavior or tests.
 

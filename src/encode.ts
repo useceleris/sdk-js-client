@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import { clientCommandSchema, type ClientCommand } from "./commands";
 import { ConfigurationError } from "./errors";
+import { describeParseError } from "./parse-error";
 import { MAXIMUM_COMMAND_BYTES, TEXT_ENCODER } from "./constants";
 
 type ValidatedClientCommand = z.output<typeof clientCommandSchema>;
@@ -9,7 +10,9 @@ export function encodeClientCommand(command: ClientCommand): Uint8Array {
   const parsedCommand = clientCommandSchema.safeParse(command);
 
   if (!parsedCommand.success) {
-    throw new ConfigurationError();
+    throw new ConfigurationError(
+      describeParseError("command", parsedCommand.error),
+    );
   }
 
   return new CommandEncoder().encode(parsedCommand.data);
@@ -34,7 +37,9 @@ class CommandEncoder {
         this.writeSegmentCommand(command);
         break;
       default: {
-        throw new ConfigurationError();
+        throw new ConfigurationError(
+          "Invalid command. Unsupported command type.",
+        );
       }
     }
 
@@ -77,7 +82,9 @@ class CommandEncoder {
   private append(bytes: Uint8Array): void {
     this.byteLength += bytes.byteLength;
     if (this.byteLength > MAXIMUM_COMMAND_BYTES) {
-      throw new ConfigurationError("Encoded command exceeds 2 MiB.");
+      throw new ConfigurationError(
+        "Encoded command exceeds 2 MiB. That is the most the server accepts on any plan; send a smaller payload.",
+      );
     }
 
     this.parts.push(bytes);
@@ -86,7 +93,9 @@ class CommandEncoder {
   private appendText(text: string): void {
     // UTF-8 cannot be shorter than the UTF-16 code-unit count.
     if (text.length > MAXIMUM_COMMAND_BYTES) {
-      throw new ConfigurationError("Encoded command exceeds 2 MiB.");
+      throw new ConfigurationError(
+        "Encoded command exceeds 2 MiB. That is the most the server accepts on any plan; send a smaller payload.",
+      );
     }
 
     this.append(TEXT_ENCODER.encode(text));
@@ -94,7 +103,9 @@ class CommandEncoder {
 
   private appendBulk(value: string | Uint8Array): void {
     if (value.length > MAXIMUM_COMMAND_BYTES) {
-      throw new ConfigurationError("Encoded command exceeds 2 MiB.");
+      throw new ConfigurationError(
+        "Encoded command exceeds 2 MiB. That is the most the server accepts on any plan; send a smaller payload.",
+      );
     }
 
     const bytes =

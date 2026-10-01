@@ -34,14 +34,19 @@ export class ConnectionHandle {
 
   send(bytes: Uint8Array): void {
     if (this.closed || this.socket.readyState !== this.socket.OPEN) {
-      throw new ConnectionError("NotConnected", "Connection is not open.");
+      throw new ConnectionError(
+        "NotConnected",
+        "Connection is not open; the WebSocket is closing or closed.",
+      );
     }
 
     if (
       !(bytes instanceof Uint8Array) ||
       bytes.byteLength > MAXIMUM_COMMAND_BYTES
     ) {
-      throw new ConfigurationError("Invalid outgoing command.");
+      throw new ConfigurationError(
+        "Invalid outgoing command. It must be a Uint8Array of at most 2 MiB.",
+      );
     }
 
     if (
@@ -50,7 +55,7 @@ export class ConnectionHandle {
     ) {
       throw new ConnectionError(
         "Transport",
-        "Invalid WebSocket buffering state.",
+        "Invalid WebSocket buffering state: bufferedAmount is not a finite, non-negative number.",
       );
     }
 
@@ -58,14 +63,20 @@ export class ConnectionHandle {
       this.socket.bufferedAmount + bytes.byteLength >
       MAXIMUM_BUFFERED_BYTES
     ) {
-      throw new ConnectionError("Backpressure", "WebSocket buffer is full.");
+      throw new ConnectionError(
+        "Backpressure",
+        "WebSocket buffer is full: this command would take unsent data past 2 MiB. Retry once the buffer drains.",
+      );
     }
 
     try {
       this.socket.send(new Uint8Array(bytes));
     } catch {
       // The native send threw after hand-off; acceptance is uncertain.
-      throw new ConnectionError("DeliveryUnknown", "WebSocket send failed.");
+      throw new ConnectionError(
+        "DeliveryUnknown",
+        "WebSocket send threw after the command was handed over, so it may or may not have been sent.",
+      );
     }
   }
 
@@ -102,15 +113,21 @@ export async function openConnection(
     typeof options?.credentialProvider !== "function" ||
     typeof options.onMessage !== "function"
   ) {
-    throw new ConfigurationError("Invalid connection options.");
+    throw new ConfigurationError(
+      "Invalid connection options. credentialProvider and onMessage must be functions.",
+    );
   }
 
   if (typeof globalThis.AbortController !== "function") {
-    throw new ConfigurationError("AbortController is unavailable.");
+    throw new ConfigurationError(
+      "AbortController is unavailable in this runtime; the client needs it to cancel connection attempts.",
+    );
   }
 
   if (typeof globalThis.WebSocket !== "function") {
-    throw new ConfigurationError("WebSocket is unavailable.");
+    throw new ConfigurationError(
+      "WebSocket is unavailable in this runtime; provide a global WebSocket implementation.",
+    );
   }
 
   const baseUrl = validateBaseUrl(config.baseUrl, config.allowInsecureLoopback);
@@ -120,10 +137,16 @@ export async function openConnection(
     let socket: WebSocket | undefined;
     let settled = false;
 
+    const timeoutMs = options.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     const timeout = setTimeout(
       () =>
-        fail(new ConnectionError("Timeout", "Connection attempt timed out.")),
-      options.timeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
+        fail(
+          new ConnectionError(
+            "Timeout",
+            `Connection attempt timed out after ${timeoutMs} ms.`,
+          ),
+        ),
+      timeoutMs,
     );
 
     const removeAttemptListeners = (): void => {
@@ -150,9 +173,19 @@ export async function openConnection(
     };
 
     const cancel = (): void =>
-      fail(new ConnectionError("Cancelled", "Connection attempt cancelled."));
+      fail(
+        new ConnectionError(
+          "Cancelled",
+          "Connection attempt cancelled by its abort signal.",
+        ),
+      );
     const handshakeFailed = (): void =>
-      fail(new ConnectionError("Transport", "WebSocket handshake failed."));
+      fail(
+        new ConnectionError(
+          "Transport",
+          "WebSocket handshake failed: the server refused the connection or could not be reached. Check the base URL, the credentials and the channel reference.",
+        ),
+      );
     const opened = (): void => {
       if (settled || !socket) return;
       settled = true;
@@ -207,7 +240,10 @@ async function requestCredentialsAndOpenSocket(
   } catch {
     if (attempt.isSettled()) return;
     attempt.onFailure(
-      new ConnectionError("Transport", "Credential acquisition failed."),
+      new ConnectionError(
+        "Transport",
+        "Credential acquisition failed: the credential provider threw or rejected.",
+      ),
     );
     return;
   }
@@ -218,8 +254,9 @@ async function requestCredentialsAndOpenSocket(
 
   try {
     credentials = getSafeParsedCredentials(providedCredentials);
-  } catch {
-    attempt.onFailure(new ConfigurationError("Invalid credentials."));
+  } catch (error) {
+    // Names which credential field failed, never its value.
+    attempt.onFailure(error as ConfigurationError);
     return;
   }
 

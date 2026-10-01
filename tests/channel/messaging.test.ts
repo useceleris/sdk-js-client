@@ -172,7 +172,8 @@ describe("publish", () => {
     }
     await expect(lobby.publish({ payload: utf8("x") })).rejects.toMatchObject({
       code: "Backpressure",
-      message: "Command writer is full.",
+      message:
+        "Command writer is full: 64 commands are waiting to be sent. Retry once the socket has flushed them.",
     });
     expect(channel.state).toBe("connected");
     expect(socket.send).toHaveBeenCalledTimes(64);
@@ -275,7 +276,7 @@ describe("subscriptions and flush", () => {
     const { channel } = createTestChannel();
     await channel.close();
     expect(() => channel.segment("chat").subscribe()).toThrow(
-      "Channel is closed.",
+      "Channel is closed; create a new one with client.channel().",
     );
   });
 });
@@ -397,7 +398,8 @@ describe("delivery and dedup", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({
       name: "ProtocolError",
-      message: "Server message is missing its identifier.",
+      message:
+        "Server message is missing its identifier. Field: messageId, byte offset 0.",
     });
     // The message is undeliverable because it cannot be deduplicated, but
     // that is one frame's problem, not the connection's (DECODE-01).
@@ -565,7 +567,10 @@ describe("delivery and dedup", () => {
 
     expect(order).toEqual(["first", "third"]);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ message: "Listener callback failed." });
+    expect(errors[0]).toMatchObject({
+      message:
+        "A listener callback threw; the channel caught the error and kept running.",
+    });
     expect(channel.state).toBe("connected");
   });
 

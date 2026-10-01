@@ -3,9 +3,12 @@ import { MAXIMUM_INTEGER32 } from "./constants";
 
 export const identifierSchema = z
   .string()
-  .min(1)
+  .min(1, "Must not be empty")
   // Unicode mode rejects lone surrogates while preserving valid pairs.
-  .refine((value) => !/[\r\n\uD800-\uDFFF]/u.test(value));
+  .refine(
+    (value) => !/[\r\n\uD800-\uDFFF]/u.test(value),
+    "Must not contain CR, LF or unpaired UTF-16 surrogates",
+  );
 const segmentFields = { segmentId: identifierSchema };
 
 export const clientCommandSchema = z.discriminatedUnion("command", [

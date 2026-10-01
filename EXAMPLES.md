@@ -215,7 +215,7 @@ try {
     switch (error.code) {
       case "Timeout": // credential+handshake deadline (default 15 s)
       case "Cancelled": // your AbortSignal fired
-      case "Transport": // network/handshake failure; safe fixed message
+      case "Transport": // network/handshake failure; the message says which
         break;
     }
   }
@@ -266,7 +266,7 @@ chat.onMessage((payload, metadata) => {
 });
 ```
 
-`readJson<T>()` asserts the type rather than validating it — schema-check payloads from peers you do not control. Invalid UTF-8, invalid JSON, and values `JSON.stringify` cannot represent (`undefined`, bigint, circular) each throw a `ConfigurationError` with a fixed message.
+`readJson<T>()` asserts the type rather than validating it — schema-check payloads from peers you do not control. Invalid UTF-8, invalid JSON, and values `JSON.stringify` cannot represent (`undefined`, bigint, circular) each throw a `ConfigurationError` that names the problem without repeating the payload.
 
 For protobuf, MessagePack, CBOR or anything else, wrap your encoder once. The SDK never bundles serializers, so you keep your own library and version:
 

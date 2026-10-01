@@ -4,6 +4,7 @@ import { validateBaseUrl } from "./connection-url";
 import type { CredentialProvider } from "./credential-types";
 import { channelReferenceSchema } from "./credentials";
 import { ConfigurationError } from "./errors";
+import { describeParseError } from "./parse-error";
 import { monotonicNow } from "./reconnect";
 import {
   DEFAULT_BASE_URL,
@@ -38,12 +39,16 @@ export class Client {
 
   constructor(options: ClientOptions) {
     if (typeof options?.credentialProvider !== "function")
-      throw new ConfigurationError("Invalid client options.");
+      throw new ConfigurationError(
+        "Invalid client options. credentialProvider: Must be a function.",
+      );
 
     const parsed = clientOptionsSchema.safeParse(options);
 
     if (!parsed.success)
-      throw new ConfigurationError("Invalid client options.");
+      throw new ConfigurationError(
+        describeParseError("client options", parsed.error),
+      );
 
     validateBaseUrl(parsed.data.baseUrl, parsed.data.allowInsecureLoopback);
 
@@ -58,7 +63,9 @@ export class Client {
     const parsed = channelReferenceSchema.safeParse(reference);
 
     if (!parsed.success)
-      throw new ConfigurationError("Invalid channel reference.");
+      throw new ConfigurationError(
+        describeParseError("channel reference", parsed.error),
+      );
 
     return new Channel({
       baseUrl: this.baseUrl,

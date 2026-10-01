@@ -8,7 +8,7 @@ Authored code and fixtures are TypeScript with extensionless local imports. Sour
 
 Zod validates outbound input once and strips unknown object fields. Derive command types from the schemas. Binary framing checks operate directly on bounded bytes; decoding output types are plain readonly TypeScript properties. Readonly properties do not make Uint8Array elements immutable. Each encoded result and decoded payload owns its storage; callers must not concurrently mutate shared buffers during an operation.
 
-Synchronous codec functions return synchronously and have no signals, timers or promise machinery. Use supported APIs, fixed Configuration/ProtocolError messages and no raw causes. Never attach credentials, input values or raw frames to exceptions.
+Synchronous codec functions return synchronously and have no signals, timers or promise machinery. Use supported APIs and no raw causes. Configuration/ProtocolError messages name the field and the rule or limit that failed (`describeParseError` does this for schema failures; a ProtocolError adds its field and byte offset). Never attach credentials, input values or raw frames to exceptions.
 
 Group tests by behavior. Fixed vectors describe expected protocol bytes/objects independently of codec helpers. Runtime fixtures invoke the real package or internal codec and report observations; Vitest owns assertions. Keep installed-package evidence distinct from bundled internal-code tests. Test tools and standard runtime primitives only as setup, not as independent subjects.
 

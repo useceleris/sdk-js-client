@@ -3,6 +3,10 @@ import { decodeServerMessage } from "../../src/decode";
 import { ProtocolError } from "../../src/errors";
 import { utf8 } from "../fixtures/codec-vectors";
 
+function located(message: string, field: string, offset: number): string {
+  return `${message} Field: ${field}, byte offset ${offset}.`;
+}
+
 it.each([
   { wire: "", message: "Missing field marker.", field: "message", offset: 0 },
   {
@@ -37,13 +41,13 @@ it.each([
   },
   {
     wire: "@SERVER_MSG\n:9223372036854775808\n",
-    message: "Integer out of range.",
+    message: "Integer is outside -9223372036854775808 to 9223372036854775807.",
     field: "timestamp",
     offset: 12,
   },
   {
     wire: "@SERVER_MSG\n:000000000000000000000\n",
-    message: "Line exceeds byte limit.",
+    message: "Line exceeds its 20-byte limit.",
     field: "timestamp",
     offset: 12,
   },
@@ -61,13 +65,13 @@ it.each([
   },
   {
     wire: "@PRES_LIST_RESPONSE\n+s\n$1\n1\n;2147483648\n",
-    message: "Integer out of range.",
+    message: "Integer is outside -2147483648 to 2147483647.",
     field: "total",
     offset: 28,
   },
   {
     wire: "@PRES_LIST_RESPONSE\n+s\n$1\n1\n;000000000001\n",
-    message: "Line exceeds byte limit.",
+    message: "Line exceeds its 11-byte limit.",
     field: "total",
     offset: 28,
   },
@@ -127,7 +131,7 @@ it.each([
   },
   {
     wire: "*4096\n",
-    message: "Array length exceeds fragment budget.",
+    message: "Array length exceeds the 4096-fragment budget.",
     field: "messages",
     offset: 0,
   },
@@ -169,7 +173,12 @@ it.each([
   },
 ])("reports $field at byte $offset: $message", ({ wire, ...expected }) => {
   expect(() => decodeServerMessage(utf8(wire))).toThrow(
-    expect.objectContaining({ code: "ProtocolError", ...expected }),
+    expect.objectContaining({
+      code: "ProtocolError",
+      field: expected.field,
+      offset: expected.offset,
+      message: located(expected.message, expected.field, expected.offset),
+    }),
   );
 });
 
@@ -215,7 +224,7 @@ it("reports the field start for invalid UTF-8 without retaining input", () => {
   }
   expect(failure).toMatchObject({
     code: "ProtocolError",
-    message: "Invalid UTF-8 text.",
+    message: located("Invalid UTF-8 text.", "tokenReference", 5),
     field: "tokenReference",
     offset: 5,
   });
@@ -227,7 +236,11 @@ it("reports the field start for invalid UTF-8 without retaining input", () => {
 it("reports array resource limits at their start", () => {
   expect(() => decodeServerMessage(utf8("*1\n".repeat(32) + "*0\n"))).toThrow(
     expect.objectContaining({
-      message: "Array nesting limit exceeded.",
+      message: located(
+        "Arrays are nested deeper than 32 levels.",
+        "messages",
+        96,
+      ),
       field: "messages",
       offset: 96,
     }),

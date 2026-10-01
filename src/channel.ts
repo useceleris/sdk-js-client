@@ -10,6 +10,7 @@ import {
 } from "./errors";
 
 import type { PresenceConnection, ServerMessage } from "./messages";
+import { describeParseError } from "./parse-error";
 import { computeReplayLookbackMs, computeRetryDelayMs } from "./reconnect";
 
 import { Segment, type SegmentDelegates } from "./segment";
@@ -147,8 +148,10 @@ class ListenerSet<T extends readonly unknown[]> {
 class DedupWindow {
   private readonly identifiers = new Set<string>();
 
-  isDuplicate(identifier: string): boolean {
-    if (this.identifiers.has(identifier)) return true;
+  // Returns false for an identifier already in the window. A new one is
+  // recorded, evicting the oldest once the window is full.
+  recordIfNew(identifier: string): boolean {
+    if (this.identifiers.has(identifier)) return false;
 
     this.identifiers.add(identifier);
     if (this.identifiers.size > DEDUP_WINDOW_SIZE) {
@@ -156,8 +159,8 @@ class DedupWindow {
       if (oldest !== undefined) this.identifiers.delete(oldest);
     }
 
-    return false;
-  } // end method isDuplicate
+    return true;
+  } // end method recordIfNew
 
   clear(): void {
     this.identifiers.clear();
@@ -248,8 +251,12 @@ export class Channel {
   } // end method events
 
   segment(segmentId: string): Segment {
-    if (!identifierSchema.safeParse(segmentId).success)
-      throw new ConfigurationError("Invalid segment identifier.");
+    const parsed = identifierSchema.safeParse(segmentId);
+
+    if (!parsed.success)
+      throw new ConfigurationError(
+        describeParseError("segment ID", parsed.error),
+      );
 
     return new Segment(segmentId, this.segmentDelegates);
   } // end method segment
@@ -267,12 +274,15 @@ export class Channel {
     ) {
       throw new ConnectionError(
         "OperationInProgress",
-        "Connection is already in progress.",
+        `connect() was already called; the channel is ${this.currentState}.`,
       );
     }
 
     if (this.currentState === "closing" || this.currentState === "closed") {
-      throw new ConnectionError("NotConnected", "Channel is closed.");
+      throw new ConnectionError(
+        "NotConnected",
+        "Channel is closed; create a new one with client.channel().",
+      );
     }
 
     this.generation += 1;
@@ -283,7 +293,7 @@ export class Channel {
     this.setState("connecting");
 
     try {
-      await this.attempt({ reason: "initial" }, options?.signal);
+      await this.establishConnection({ reason: "initial" }, options?.signal);
     } catch (error) {
       if (generation === this.generation) {
         this.generation += 1;
@@ -304,7 +314,10 @@ export class Channel {
     });
 
     this.rejectPendingPresenceQuery(
-      new ConnectionError("Cancelled", "Channel closed."),
+      new ConnectionError(
+        "Cancelled",
+        "Channel closed while the presence query was pending.",
+      ),
     );
     this.generation += 1;
     this.clearRetryTimer();
@@ -349,7 +362,8 @@ export class Channel {
     return handle;
   } // end method detachHandle
 
-  private async attempt(
+  // Opens the WebSocket, installs it, and re-sends every segment interest.
+  private async establishConnection(
     recovery: RecoveryContext,
     callerSignal?: AbortSignal,
   ): Promise<void> {
@@ -380,7 +394,10 @@ export class Channel {
 
       if (generation !== this.generation) {
         handle.close();
-        throw new ConnectionError("Cancelled", "Connection attempt cancelled.");
+        throw new ConnectionError(
+          "Cancelled",
+          "Connection attempt cancelled: the channel was closed or a newer attempt started.",
+        );
       }
 
       this.handle = handle;
@@ -400,7 +417,7 @@ export class Channel {
       if (this.attemptController === controller)
         this.attemptController = undefined;
     }
-  } // end method attempt
+  } // end method establishConnection
 
   private addMessageListener(
     segmentId: string,
@@ -473,7 +490,10 @@ export class Channel {
     sendUnsubscribe: () => void,
   ): Subscription {
     if (this.currentState === "closing" || this.currentState === "closed")
-      throw new ConnectionError("NotConnected", "Channel is closed.");
+      throw new ConnectionError(
+        "NotConnected",
+        "Channel is closed; create a new one with client.channel().",
+      );
 
     const count = (interests.get(segmentId) ?? 0) + 1;
     interests.set(segmentId, count);
@@ -507,14 +527,20 @@ export class Channel {
     },
   ): Promise<PresencePage> {
     if (this.currentState !== "connected" || !this.handle)
-      throw new ConnectionError("NotConnected", "Channel is not connected.");
+      throw new ConnectionError(
+        "NotConnected",
+        `Channel is not connected; it is ${this.currentState}.`,
+      );
     if (this.pendingPresenceQuery)
       throw new ConnectionError(
         "OperationInProgress",
-        "A presence query is already in flight.",
+        "A presence query is already in flight; wait for it to settle before starting another.",
       );
     if (options?.signal?.aborted)
-      throw new ConnectionError("Cancelled", "Presence query cancelled.");
+      throw new ConnectionError(
+        "Cancelled",
+        "Presence query cancelled: its abort signal was already aborted.",
+      );
 
     this.presenceRequestCount += 1;
     const requestId = `${this.presenceRequestCount}`;
@@ -535,13 +561,19 @@ export class Channel {
       const timer = setTimeout(
         () =>
           this.rejectPendingPresenceQuery(
-            new ConnectionError("Timeout", "Presence query timed out."),
+            new ConnectionError(
+              "Timeout",
+              `Presence query timed out after ${this.internals.presenceQueryTimeoutMs} ms.`,
+            ),
           ),
         this.internals.presenceQueryTimeoutMs,
       );
       const abort = (): void =>
         this.rejectPendingPresenceQuery(
-          new ConnectionError("Cancelled", "Presence query cancelled."),
+          new ConnectionError(
+            "Cancelled",
+            "Presence query cancelled by its abort signal.",
+          ),
         );
       options.signal?.addEventListener("abort", abort, { once: true });
 
@@ -575,7 +607,7 @@ export class Channel {
     this.rejectPendingPresenceQuery(
       new ConnectionError(
         "Transport",
-        "Connection lost during presence query.",
+        "Connection lost during the presence query; query again once the channel reconnects.",
       ),
     );
   } // end method rejectPresenceQueryOnConnectionLoss
@@ -589,9 +621,15 @@ export class Channel {
     },
   ): Promise<void> {
     if (this.currentState !== "connected" || !this.handle)
-      throw new ConnectionError("NotConnected", "Channel is not connected.");
+      throw new ConnectionError(
+        "NotConnected",
+        `Channel is not connected; it is ${this.currentState}.`,
+      );
     if (options?.signal?.aborted)
-      throw new ConnectionError("Cancelled", "Publish cancelled.");
+      throw new ConnectionError(
+        "Cancelled",
+        "Publish cancelled: its abort signal was already aborted.",
+      );
 
     const bytes = encodeClientCommand({
       command: "PUB",
@@ -606,13 +644,19 @@ export class Channel {
   private sendCommand(bytes: Uint8Array): void {
     const handle = this.handle;
     if (!handle)
-      throw new ConnectionError("NotConnected", "Channel is not connected.");
+      throw new ConnectionError(
+        "NotConnected",
+        `Channel is not connected; it is ${this.currentState}.`,
+      );
 
     // No native drain event exists: the command count resets whenever the
     // buffer is observed empty at send time (documented approximation).
     if (handle.bufferedAmount === 0) this.pendingCommands = 0;
     if (this.pendingCommands >= MAXIMUM_PENDING_COMMANDS)
-      throw new ConnectionError("Backpressure", "Command writer is full.");
+      throw new ConnectionError(
+        "Backpressure",
+        `Command writer is full: ${MAXIMUM_PENDING_COMMANDS} commands are waiting to be sent. Retry once the socket has flushed them.`,
+      );
 
     handle.send(bytes);
     this.pendingCommands += 1;
@@ -631,7 +675,10 @@ export class Channel {
       this.failTerminal(
         error instanceof ConfigurationError || error instanceof ConnectionError
           ? error
-          : new ConnectionError("Transport", "Interest update failed."),
+          : new ConnectionError(
+              "Transport",
+              `Sending ${command.command} failed with an unexpected error.`,
+            ),
       );
     }
   } // end method sendInterestCommand
@@ -743,7 +790,7 @@ export class Channel {
     }
 
     // Ids are recorded before fanout, even with no listeners.
-    if (this.dedupWindow.isDuplicate(message.messageId)) return;
+    if (!this.dedupWindow.recordIfNew(message.messageId)) return;
 
     const listeners = this.segmentListeners.get(message.segmentId);
     if (!listeners) return;
@@ -841,7 +888,7 @@ export class Channel {
     const attemptIndex = this.retriesUsed;
 
     try {
-      await this.attempt({
+      await this.establishConnection({
         reason: "reconnect",
         disconnectedAt: outage.disconnectedAt,
         replayLookbackMs: computeReplayLookbackMs(
@@ -869,7 +916,10 @@ export class Channel {
           error instanceof ConnectionError ||
           error instanceof ProtocolError
           ? error
-          : new ConnectionError("Transport", "Reconnect attempt failed."),
+          : new ConnectionError(
+              "Transport",
+              "Reconnect attempt failed with an unexpected error.",
+            ),
       );
       return;
     }
@@ -905,7 +955,10 @@ export class Channel {
 
   private reportListenerFailure(): void {
     this.emitError(
-      new ConnectionError("Transport", "Listener callback failed."),
+      new ConnectionError(
+        "Transport",
+        "A listener callback threw; the channel caught the error and kept running.",
+      ),
     );
   } // end method reportListenerFailure
 

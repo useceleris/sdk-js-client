@@ -24,11 +24,26 @@ it.each(["\n", "\r\n"])(
 );
 
 it.each([
-  { header: "0".repeat(20), reason: "Unterminated line." },
-  { header: "0".repeat(21), reason: "Unterminated line." },
-  { header: "0".repeat(22), reason: "Line exceeds byte limit." },
-  { header: "0".repeat(21) + "\n", reason: "Line exceeds byte limit." },
-  { header: "0".repeat(21) + "\r\n", reason: "Line exceeds byte limit." },
+  {
+    header: "0".repeat(20),
+    reason: "Unterminated line. Field: timestamp, byte offset 12.",
+  },
+  {
+    header: "0".repeat(21),
+    reason: "Unterminated line. Field: timestamp, byte offset 12.",
+  },
+  {
+    header: "0".repeat(22),
+    reason: "Line exceeds its 20-byte limit. Field: timestamp, byte offset 12.",
+  },
+  {
+    header: "0".repeat(21) + "\n",
+    reason: "Line exceeds its 20-byte limit. Field: timestamp, byte offset 12.",
+  },
+  {
+    header: "0".repeat(21) + "\r\n",
+    reason: "Line exceeds its 20-byte limit. Field: timestamp, byte offset 12.",
+  },
 ])("preserves bounded-header failure %#", ({ header, reason }) => {
   expect(() => decodeServerMessage(utf8(`@SERVER_MSG\n:${header}`))).toThrow(
     expect.objectContaining({
@@ -61,7 +76,8 @@ it("rejects a long malformed header without searching the rest of the message", 
   const bytes = utf8("@SERVER_MSG\n:" + "0".repeat(65536) + "\n");
   expect(() => decodeServerMessage(bytes)).toThrow(
     expect.objectContaining({
-      message: "Line exceeds byte limit.",
+      message:
+        "Line exceeds its 20-byte limit. Field: timestamp, byte offset 12.",
       field: "timestamp",
       offset: 12,
     }),

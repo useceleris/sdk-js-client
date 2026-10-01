@@ -15,7 +15,9 @@ export class ProtocolError extends Error {
     readonly field: string,
     readonly offset: number,
   ) {
-    super(message);
+    // The field is a name this package chose and the offset a byte position,
+    // so neither repeats what the server sent.
+    super(`${message} Field: ${field}, byte offset ${offset}.`);
     this.name = "ProtocolError";
   }
 }

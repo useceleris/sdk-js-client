@@ -195,7 +195,8 @@ describe("channel lifecycle", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({
       code: "Transport",
-      message: "Listener callback failed.",
+      message:
+        "A listener callback threw; the channel caught the error and kept running.",
     });
     expect(JSON.stringify(errors[0])).not.toContain("secret");
     expect(channel.state).toBe("connecting");

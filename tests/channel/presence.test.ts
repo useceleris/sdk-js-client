@@ -158,7 +158,7 @@ describe("presence interests", () => {
     const { channel } = createTestChannel();
     await channel.close();
     expect(() => channel.segment("chat").subscribePresence()).toThrow(
-      "Channel is closed.",
+      "Channel is closed; create a new one with client.channel().",
     );
   });
 
@@ -461,7 +461,8 @@ describe("presence queries", () => {
       .presenceList({ page: 1, perPage: 25 });
     const lostRejection = expect(lostQuery).rejects.toMatchObject({
       code: "Transport",
-      message: "Connection lost during presence query.",
+      message:
+        "Connection lost during the presence query; query again once the channel reconnects.",
     });
     sockets.at(-1)!.disconnect();
     await lostRejection;
@@ -473,7 +474,7 @@ describe("presence queries", () => {
       .presenceList({ page: 1, perPage: 25 });
     const closedRejection = expect(closedQuery).rejects.toMatchObject({
       code: "Cancelled",
-      message: "Channel closed.",
+      message: "Channel closed while the presence query was pending.",
     });
     await closed.channel.close();
     await closedRejection;
@@ -536,7 +537,10 @@ describe("notices", () => {
     sockets.at(-1)!.receive(utf8("@SERVER_MSG\n:1\n$0\n\n").buffer);
     expect(order).toEqual(["after"]);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ message: "Listener callback failed." });
+    expect(errors[0]).toMatchObject({
+      message:
+        "A listener callback threw; the channel caught the error and kept running.",
+    });
     expect(channel.state).toBe("connected");
   });
 
@@ -621,7 +625,10 @@ describe("notices", () => {
 
     expect(order).toEqual(["after"]);
     expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ message: "Listener callback failed." });
+    expect(errors[0]).toMatchObject({
+      message:
+        "A listener callback threw; the channel caught the error and kept running.",
+    });
     expect(channel.state).toBe("connected");
   });
 });

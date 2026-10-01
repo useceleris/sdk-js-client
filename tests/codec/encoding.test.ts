@@ -97,7 +97,7 @@ describe("command encoding", () => {
     ).toThrow(ConfigurationError);
   });
 
-  it("returns a safe fixed error", () => {
+  it("names the failed field without repeating the input", () => {
     let failure: unknown;
     try {
       encodeClientCommand({
@@ -110,7 +110,8 @@ describe("command encoding", () => {
     expect(failure).toBeInstanceOf(ConfigurationError);
     expect(failure).toMatchObject({
       code: "Configuration",
-      message: "Invalid client command.",
+      message:
+        "Invalid command. command: Invalid discriminator value. Expected 'PUB' | 'SUB' | 'UNSUB' | 'PRES_SUB' | 'PRES_UNSUB' | 'PRES_LIST'.",
     });
     expect(failure).not.toHaveProperty("cause");
     expect(JSON.stringify(failure)).not.toContain("synthetic-secret");

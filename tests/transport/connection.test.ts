@@ -115,7 +115,8 @@ describe("connection attempt", () => {
       );
       expect(error).toMatchObject({
         code: "Transport",
-        message: "Credential acquisition failed.",
+        message:
+          "Credential acquisition failed: the credential provider threw or rejected.",
       });
       expect(String(error)).not.toContain("synthetic-secret");
       expect(JSON.stringify(error)).not.toContain("synthetic");
@@ -399,7 +400,7 @@ describe("open connection", () => {
     socket.bufferedAmount = 2 * 1024 * 1024 - 1;
     handle.send(new Uint8Array(1));
     expect(() => handle.send(new Uint8Array(2))).toThrow(
-      "WebSocket buffer is full.",
+      "WebSocket buffer is full: this command would take unsent data past 2 MiB. Retry once the buffer drains.",
     );
   });
 
@@ -407,7 +408,7 @@ describe("open connection", () => {
     const { handle, socket } = await connect();
     socket.bufferedAmount = Number.NaN;
     expect(() => handle.send(new Uint8Array())).toThrow(
-      "Invalid WebSocket buffering state.",
+      "Invalid WebSocket buffering state: bufferedAmount is not a finite, non-negative number.",
     );
     socket.bufferedAmount = 0;
     socket.send.mockImplementation(() => {
@@ -421,7 +422,8 @@ describe("open connection", () => {
     }
     expect(sendFailure).toMatchObject({
       code: "DeliveryUnknown",
-      message: "WebSocket send failed.",
+      message:
+        "WebSocket send threw after the command was handed over, so it may or may not have been sent.",
     });
   });
 
@@ -434,7 +436,7 @@ describe("open connection", () => {
     socket.disconnect();
     expect(options.onClose).toHaveBeenCalledTimes(1);
     expect(() => handle.send(new Uint8Array())).toThrow(
-      "Connection is not open.",
+      "Connection is not open; the WebSocket is closing or closed.",
     );
   });
 
@@ -449,7 +451,7 @@ describe("open connection", () => {
     socket.disconnect();
     expect(options.onClose).toHaveBeenCalledTimes(1);
     expect(() => handle.send(new Uint8Array())).toThrow(
-      "Connection is not open.",
+      "Connection is not open; the WebSocket is closing or closed.",
     );
   });
 });

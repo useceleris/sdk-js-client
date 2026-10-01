@@ -82,7 +82,8 @@ describe("server decoding", () => {
     }
     expect(failure).toMatchObject({
       code: "ProtocolError",
-      message: "Unexpected server message marker.",
+      message:
+        "Unexpected server message marker. Field: message, byte offset 0.",
       field: "message",
       offset: 0,
     });
