@@ -142,7 +142,7 @@ describe("recovery restoration", () => {
     expect(delivered).toEqual(["id-1", "id-2", "id-3"]);
   });
 
-  it("fails terminally when the reconnect flush hits a full writer", async () => {
+  it("restores more than 64 subscriptions on reconnect as the writer drains", async () => {
     const setup = await establish();
     for (let index = 0; index < 65; index += 1) {
       setup.channel.segment(`segment-${index}`).subscribe();
@@ -160,11 +160,14 @@ describe("recovery restoration", () => {
     reconnectSocket.open();
     await flushMicrotasks();
 
-    expect(setup.channel.state).toBe("failed");
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ code: "Backpressure" });
-    expect(reconnectSocket.close).toHaveBeenCalled();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(setup.channel.state).toBe("connected");
+    expect(reconnectSocket.send).toHaveBeenCalledTimes(64);
+
+    reconnectSocket.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(reconnectSocket.send).toHaveBeenCalledTimes(65);
+    expect(errors).toEqual([]);
   });
 
   it("restores intent again on a second recovery without duplicates", async () => {

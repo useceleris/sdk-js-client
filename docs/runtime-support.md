@@ -4,7 +4,7 @@
 
 Consumer floors: Node 22.15.0, Bun 1.3.0 and Deno 2.5.0. Additional qualification covers current Node 22/24/26 lines and current Bun/Deno. C3 qualifies internal package/codec and local native-transport execution; real Celeris integration remains C8. Node consumer floors are independent of the development host: tsdown 0.23.0 requires Node ^22.18.0 / ^24.11.0 / >=26; Vitest 5 requires ^22.12.0 / ^24 / >=26.
 
-The codec needs Uint8Array, bigint, TextEncoder and fatal UTF-8 TextDecoder. It does not need WebSocket, crypto or btoa. Production types use ES2022/DOM with no Node ambient types. C3 requires URL, AbortController/AbortSignal, timers and native WebSocket. Other runtimes must provide those capabilities and execution evidence; no implicit Node fallback.
+The codec needs Uint8Array, bigint, TextEncoder and fatal UTF-8 TextDecoder. It does not need WebSocket, crypto or btoa. Production types use ES2022/DOM with no Node ambient types. C3 requires URL, AbortController/AbortSignal, timers and native WebSocket. Publishing also needs `crypto.getRandomValues`, which generates each message id. Other runtimes must provide those capabilities and execution evidence; no implicit Node fallback.
 
 Browser support claims state exactly what has been executed (PORT-01, aligned 2026-09-22):
 

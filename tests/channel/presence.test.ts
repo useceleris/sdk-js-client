@@ -162,7 +162,7 @@ describe("presence interests", () => {
     );
   });
 
-  it("fails terminally when a presence interest write hits the writer bound", async () => {
+  it("sends a presence subscription queued behind a full writer", async () => {
     const { channel } = await establish();
     const errors: unknown[] = [];
     channel.events().onError((error) => errors.push(error));
@@ -175,10 +175,14 @@ describe("presence interests", () => {
     }
 
     channel.segment("chat").subscribePresence();
-    expect(channel.state).toBe("failed");
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toMatchObject({ code: "Backpressure" });
-    expect(vi.getTimerCount()).toBe(0);
+    expect(socket.send).toHaveBeenCalledTimes(64);
+
+    socket.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(sentFrames().at(-1)).toBe("@PRES_SUB\n$4\nchat\n");
+    expect(channel.state).toBe("connected");
+    expect(errors).toEqual([]);
   });
 });
 

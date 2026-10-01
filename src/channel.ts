@@ -1,3 +1,8 @@
+import {
+  CommandQueue,
+  type InterestCommand,
+  type InterestKind,
+} from "./command-queue";
 import { identifierSchema } from "./commands";
 import { openConnection, type ConnectionHandle } from "./connection";
 import type { CredentialProvider } from "./credential-types";
@@ -19,9 +24,9 @@ import {
   DEDUP_WINDOW_SIZE,
   DEFAULT_SEGMENT_ID,
   LENIENT_TEXT_DECODER,
-  MAXIMUM_PENDING_COMMANDS,
   MAXIMUM_RETRIES,
   PRESENCE_LIST_COMMAND,
+  RATE_LIMIT_ERROR_TYPE,
   RETRY_BUDGET_RESET_MS,
 } from "./constants";
 
@@ -33,7 +38,7 @@ export type ChannelError =
 export type MessageMetadata = {
   readonly tokenReference: string;
   readonly segmentId: string;
-  readonly messageId: string; // server-assigned, always present (REV-01, C8-verified)
+  readonly messageId: string; // always present: the publisher's or the server's (REV-01)
   readonly timestamp: bigint;
 };
 
@@ -105,6 +110,7 @@ export type ChannelInternals = {
   readonly clock: () => number;
   readonly wallClock: () => number;
   readonly random: () => number;
+  readonly generateMessageId: () => string;
 };
 
 type RecoveryContext =
@@ -182,7 +188,13 @@ export class Channel {
   private resolveClose: (() => void) | undefined;
   private dispatchingErrors = false;
 
-  private pendingCommands = 0;
+  private readonly commandQueue = new CommandQueue({
+    handle: () => this.handle,
+    interestCommand: (kind, segmentId) => this.interestCommand(kind, segmentId),
+    receiveInterestWriteFailure: () => this.receiveInterestWriteFailure(),
+    clock: () => this.internals.clock(),
+    random: () => this.internals.random(),
+  });
   private readonly dedupWindow = new DedupWindow();
   private readonly segmentListeners = new Map<
     string,
@@ -232,8 +244,8 @@ export class Channel {
       this.addMessageListener(segmentId, listener),
     addPresenceListener: (segmentId, listener) =>
       this.addPresenceListener(segmentId, listener),
-    addMessageInterest: (segmentId) => this.addMessageInterest(segmentId),
-    addPresenceInterest: (segmentId) => this.addPresenceInterest(segmentId),
+    addMessageInterest: (segmentId) => this.addInterest("message", segmentId),
+    addPresenceInterest: (segmentId) => this.addInterest("presence", segmentId),
     publishToSegment: (segmentId, options) =>
       this.publishToSegment(segmentId, options),
     queryPresence: (segmentId, options) =>
@@ -323,6 +335,12 @@ export class Channel {
     this.clearRetryTimer();
     this.attemptController?.abort();
     this.attemptController = undefined;
+    this.commandQueue.reset(
+      new ConnectionError(
+        "Cancelled",
+        "Channel closed before the publish was sent.",
+      ),
+    );
 
     const handle = this.detachHandle();
     this.setState("closing");
@@ -362,7 +380,7 @@ export class Channel {
     return handle;
   } // end method detachHandle
 
-  // Opens the WebSocket, installs it, and re-sends every segment interest.
+  // Opens the WebSocket, installs it, and re-sends every subscription.
   private async establishConnection(
     recovery: RecoveryContext,
     callerSignal?: AbortSignal,
@@ -401,17 +419,21 @@ export class Channel {
       }
 
       this.handle = handle;
-      this.pendingCommands = 0;
       this.connectedAtMonotonic = this.internals.clock();
       this.outage = undefined;
+      this.flushInterests();
 
-      try {
-        this.flushInterests();
-      } catch (error) {
-        this.handle = undefined;
-        handle.close();
-        throw error;
+      // A refused subscription write detaches the socket it was sent on.
+      if (this.handle !== handle) {
+        throw new ConnectionError(
+          "Transport",
+          "Restoring subscriptions failed: the socket refused a write.",
+        );
       }
+    } catch (error) {
+      // A failed attempt leaves nothing queued for the next socket.
+      this.resetCommandQueueOnConnectionLoss();
+      throw error;
     } finally {
       callerSignal?.removeEventListener("abort", forwardAbort);
       if (this.attemptController === controller)
@@ -451,53 +473,20 @@ export class Channel {
     return listeners.add(listener);
   } // end method addPresenceListener
 
-  private addMessageInterest(segmentId: string): Subscription {
-    return this.addInterest(
-      this.messageInterests,
-      segmentId,
-      () => {
-        if (segmentId !== DEFAULT_SEGMENT_ID)
-          this.sendInterestCommand({ command: "SUB", segmentId });
-      },
-      () => {
-        if (
-          segmentId !== DEFAULT_SEGMENT_ID &&
-          !this.presenceInterests.has(segmentId)
-        )
-          this.sendInterestCommand({ command: "UNSUB", segmentId });
-      },
-    );
-  } // end method addMessageInterest
-
-  // Unlike message SUB/UNSUB, presence commands apply to every segment
-  // including the default one: the server's connect-time auto-join grants
-  // message membership only, never a presence subscription.
-  private addPresenceInterest(segmentId: string): Subscription {
-    return this.addInterest(
-      this.presenceInterests,
-      segmentId,
-      () => this.sendInterestCommand({ command: "PRES_SUB", segmentId }),
-      () => this.sendInterestCommand({ command: "PRES_UNSUB", segmentId }),
-    );
-  } // end method addPresenceInterest
-
-  // Ref-counts one interest map entry; the callbacks run only while
-  // connected, on the first registration and on the last cancellation.
-  private addInterest(
-    interests: Map<string, number>,
-    segmentId: string,
-    sendSubscribe: () => void,
-    sendUnsubscribe: () => void,
-  ): Subscription {
+  // Ref-counts one interest; the first registration and the last
+  // cancellation queue a sync of that segment's subscription.
+  private addInterest(kind: InterestKind, segmentId: string): Subscription {
     if (this.currentState === "closing" || this.currentState === "closed")
       throw new ConnectionError(
         "NotConnected",
         "Channel is closed; create a new one with client.channel().",
       );
 
+    const interests =
+      kind === "message" ? this.messageInterests : this.presenceInterests;
     const count = (interests.get(segmentId) ?? 0) + 1;
     interests.set(segmentId, count);
-    if (count === 1 && this.currentState === "connected") sendSubscribe();
+    if (count === 1) this.queueInterestSync(kind, segmentId);
 
     let cancelled = false;
     return {
@@ -513,10 +502,54 @@ export class Channel {
         }
 
         interests.delete(segmentId);
-        if (this.currentState === "connected") sendUnsubscribe();
+        this.queueInterestSync(kind, segmentId);
       },
     };
   } // end method addInterest
+
+  // Without a socket there is nothing to sync: installing one syncs every
+  // held interest.
+  private queueInterestSync(kind: InterestKind, segmentId: string): void {
+    if (this.handle) this.commandQueue.queueInterest(kind, segmentId);
+  } // end method queueInterestSync
+
+  // The command that brings the server in line with the segment's interest
+  // as it stands now. Subscriptions are synced as state, so a resend is
+  // always safe.
+  private interestCommand(
+    kind: InterestKind,
+    segmentId: string,
+  ): InterestCommand | undefined {
+    // Presence applies to every segment, the default one included: the
+    // server's connect-time auto-join grants message membership only.
+    if (kind === "presence")
+      return {
+        command: this.presenceInterests.has(segmentId)
+          ? "PRES_SUB"
+          : "PRES_UNSUB",
+        segmentId,
+      };
+
+    // The server joins the default segment on connect and never leaves it.
+    if (segmentId === DEFAULT_SEGMENT_ID) return undefined;
+
+    if (this.messageInterests.has(segmentId))
+      return { command: "SUB", segmentId };
+
+    // A presence subscription keeps the segment joined for messages.
+    if (this.presenceInterests.has(segmentId)) return undefined;
+
+    return { command: "UNSUB", segmentId };
+  } // end method interestCommand
+
+  // The server's view of this connection's subscriptions is now unknown, so
+  // the socket is replaced: reconnecting re-sends every subscription.
+  private receiveInterestWriteFailure(): void {
+    const handle = this.detachHandle();
+    if (this.currentState === "connected") this.enterReconnecting();
+
+    handle?.close();
+  } // end method receiveInterestWriteFailure
 
   private async queryPresence(
     segmentId: string,
@@ -526,7 +559,9 @@ export class Channel {
       readonly signal?: AbortSignal;
     },
   ): Promise<PresencePage> {
-    if (this.currentState !== "connected" || !this.handle)
+    const handle = this.handle;
+
+    if (this.currentState !== "connected" || !handle)
       throw new ConnectionError(
         "NotConnected",
         `Channel is not connected; it is ${this.currentState}.`,
@@ -553,7 +588,7 @@ export class Channel {
     });
 
     // A synchronous send failure rejects without ever taking the query slot.
-    this.sendCommand(bytes);
+    this.commandQueue.sendNow(handle, bytes);
 
     // A timed-out or cancelled query frees its slot and leaves the connection
     // alone: a late reply carries the old request id and is dropped.
@@ -612,6 +647,15 @@ export class Channel {
     );
   } // end method rejectPresenceQueryOnConnectionLoss
 
+  private resetCommandQueueOnConnectionLoss(): void {
+    this.commandQueue.reset(
+      new ConnectionError(
+        "NotConnected",
+        "Connection lost before the publish was sent; publish again once the channel reconnects.",
+      ),
+    );
+  } // end method resetCommandQueueOnConnectionLoss
+
   private async publishToSegment(
     segmentId: string,
     options: {
@@ -634,65 +678,21 @@ export class Channel {
     const bytes = encodeClientCommand({
       command: "PUB",
       segmentId,
-      messageId: options.messageId,
+      messageId: options.messageId ?? this.internals.generateMessageId(),
       payload: options.payload,
     });
 
-    this.sendCommand(bytes);
+    return this.commandQueue.publish(segmentId, bytes, options.signal);
   } // end method publishToSegment
 
-  private sendCommand(bytes: Uint8Array): void {
-    const handle = this.handle;
-    if (!handle)
-      throw new ConnectionError(
-        "NotConnected",
-        `Channel is not connected; it is ${this.currentState}.`,
-      );
-
-    // No native drain event exists: the command count resets whenever the
-    // buffer is observed empty at send time (documented approximation).
-    if (handle.bufferedAmount === 0) this.pendingCommands = 0;
-    if (this.pendingCommands >= MAXIMUM_PENDING_COMMANDS)
-      throw new ConnectionError(
-        "Backpressure",
-        `Command writer is full: ${MAXIMUM_PENDING_COMMANDS} commands are waiting to be sent. Retry once the socket has flushed them.`,
-      );
-
-    handle.send(bytes);
-    this.pendingCommands += 1;
-  } // end method sendCommand
-
-  // Runtime interest writes cannot leave stale remote interest silently
-  // active: a failed SUB/UNSUB invalidates the socket and fails the channel.
-  private sendInterestCommand(command: {
-    command: "SUB" | "UNSUB" | "PRES_SUB" | "PRES_UNSUB";
-    segmentId: string;
-  }): void {
-    try {
-      this.sendCommand(encodeClientCommand(command));
-    } catch (error) {
-      this.detachHandle()?.close();
-      this.failTerminal(
-        error instanceof ConfigurationError || error instanceof ConnectionError
-          ? error
-          : new ConnectionError(
-              "Transport",
-              `Sending ${command.command} failed with an unexpected error.`,
-            ),
-      );
-    }
-  } // end method sendInterestCommand
-
+  // Restoration goes through the queue, so it waits for writer room and
+  // always reaches the server before any publish.
   private flushInterests(): void {
-    for (const segmentId of this.messageInterests.keys()) {
-      if (segmentId === DEFAULT_SEGMENT_ID) continue;
+    for (const segmentId of this.messageInterests.keys())
+      this.commandQueue.queueInterest("message", segmentId);
 
-      this.sendCommand(encodeClientCommand({ command: "SUB", segmentId }));
-    }
-
-    for (const segmentId of this.presenceInterests.keys()) {
-      this.sendCommand(encodeClientCommand({ command: "PRES_SUB", segmentId }));
-    }
+    for (const segmentId of this.presenceInterests.keys())
+      this.commandQueue.queueInterest("presence", segmentId);
   } // end method flushInterests
 
   private routeMessage(
@@ -729,6 +729,9 @@ export class Channel {
 
           return;
         }
+
+        if (message.type === RATE_LIMIT_ERROR_TYPE)
+          this.commandQueue.receiveRateLimit();
 
         this.emitError(error);
         return;
@@ -774,10 +777,10 @@ export class Channel {
   private deliverMessage(
     message: Extract<ServerMessage, { command: "MSG" }>,
   ): void {
-    // REV-01, verified against the live server in C8: every MSG carries a
-    // server-assigned id. A missing id leaves the message undeliverable —
-    // it cannot be deduplicated — so it is dropped and reported, without
-    // taking the connection down with it (DECODE-01).
+    // REV-01, verified against the live server in C8: every MSG carries an
+    // id, the publisher's or one the server assigns. A missing id leaves the
+    // message undeliverable — it cannot be deduplicated — so it is dropped
+    // and reported, without taking the connection down with it (DECODE-01).
     if (message.messageId === null) {
       this.emitError(
         new ProtocolError(
@@ -852,6 +855,7 @@ export class Channel {
 
   private enterReconnecting(): void {
     this.rejectPresenceQueryOnConnectionLoss();
+    this.resetCommandQueueOnConnectionLoss();
     const now = this.internals.clock();
     if (now - this.connectedAtMonotonic >= RETRY_BUDGET_RESET_MS)
       this.retriesUsed = 0;
@@ -935,6 +939,7 @@ export class Channel {
 
   private failTerminal(error: ChannelError): void {
     this.rejectPresenceQueryOnConnectionLoss();
+    this.resetCommandQueueOnConnectionLoss();
     this.generation += 1;
     this.clearRetryTimer();
     this.emitError(error);

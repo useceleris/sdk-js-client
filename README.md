@@ -44,9 +44,11 @@ Full walkthroughs — lifecycle events, presence, permissions, error handling �
 
 ## Delivery semantics, honestly
 
-- `publish()` resolves when the local socket accepted the bytes — there is **no server receipt or ack** anywhere in the protocol; server responses are untagged prose notices.
+- `publish()` resolves when the local socket accepted the bytes — there is **no server receipt or ack** anywhere in the protocol; server responses are untagged prose notices. Every publish carries a message id, yours or a generated one.
 - Lost connections retry automatically (10 attempts, full jitter, fresh credentials, replay lookback). Recovery restores your subscriptions and reports **possible gaps and duplicates**; a bounded 1024-id window deduplicates replayed messages, duplicates beyond it remain possible.
-- No offline queue, no automatic resend, no durable history, no global ordering.
+- A `RateLimitError` never names the command it dropped, so the client pauses and resends what it sent in the last two seconds: subscriptions first, as their current state, then up to the last 64 publishes, each at most once and with its original id so receivers drop a copy that had already arrived. After eight limits in a row the client treats the limit as a used-up quota: it stops resending, and re-sends the subscriptions it dropped on a slow probe (after a minute, doubling to at most an hour) until commands go two seconds without a limit. The probe schedule survives a reconnect. Resends count toward usage, and a resent subscription can re-announce a presence join.
+- Subscriptions and publishes wait for room when the writer is full instead of failing. A subscription change goes out ahead of publishes, but never ahead of a publish to its own segment that was queued before it. A presence query still rejects with `Backpressure` when the writer is full or sending is paused.
+- No offline queue (publishes still waiting when the connection drops are rejected), no durable history, no global ordering.
 - Errors the server sends — `PermissionDeniedError`, `RateLimitError`, `MessageSizeLimitError`, `ParserError`, `SendError`, `InternalError` — arrive through `events().onError` as a `ServerError` carrying the server's `type`, `subType` (the command it answers), `message` and `resource` (what that command names, such as the segment). A denied or oversized publish still resolves locally, since publishing has no receipt. A failed presence query is the exception: its error names the query, so `presenceList()` rejects with it at once.
 - Publishing to a segment joins it server-side; subscribing to presence also joins it for messages.
 
@@ -56,7 +58,10 @@ Full walkthroughs — lifecycle events, presence, permissions, error handling �
 | ---------------- | -------------------------------------------------------------------------------------- |
 | Outbound command | 2 MiB encoded, rejected before any write                                               |
 | Plan payload cap | enforced by the server per plan; see below                                             |
-| Writer bounds    | 64 pending commands / 2 MiB incl. socket buffer                                        |
+| Writer bounds    | 64 pending commands / 2 MiB incl. socket buffer; 64 queued publishes, plus resends     |
+| Rate-limit pause | 1 s plus full jitter growing with consecutive limits, ≤31 s                            |
+| Resends          | last 2 s of commands, at most 64 publishes, each once                                  |
+| Quota probe      | after 8 limits in a row: dropped subscriptions retried after 1 min, doubling to 1 h    |
 | Connect deadline | `connectTimeoutMs`, default 15 s                                                       |
 | Presence query   | one in flight per channel, default 10 s deadline; a timeout never drops the connection |
 | Reconnect        | 10 retries, full jitter ≤30 s, reset after 60 s                                        |

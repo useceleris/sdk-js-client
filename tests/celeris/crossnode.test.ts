@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GENERATED_MESSAGE_ID,
   connectedChannel,
   nextMessage,
   uniqueChannelReference,
@@ -28,7 +29,7 @@ describe("celeris cross-node", () => {
       "cross-node delivery",
       25_000,
     );
-    expect(message.messageId).toMatch(/^msg_/);
+    expect(message.messageId).toMatch(GENERATED_MESSAGE_ID);
 
     await primary.close();
     await secondary.close();

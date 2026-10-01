@@ -4,6 +4,7 @@ import { validateBaseUrl } from "./connection-url";
 import type { CredentialProvider } from "./credential-types";
 import { channelReferenceSchema } from "./credentials";
 import { ConfigurationError } from "./errors";
+import { generateMessageId } from "./message-id";
 import { describeParseError } from "./parse-error";
 import { monotonicNow } from "./reconnect";
 import {
@@ -77,6 +78,7 @@ export class Client {
       clock: monotonicNow,
       wallClock: Date.now,
       random: Math.random,
+      generateMessageId,
     });
   } // end method channel
 } // end class Client

@@ -16,6 +16,41 @@ export const MAXIMUM_BUFFERED_BYTES = MAXIMUM_COMMAND_BYTES;
 
 export const MAXIMUM_PENDING_COMMANDS = 64;
 
+// Outbound recovery (RESEND-01). A rate limit is reported without saying
+// which frame it dropped, so whatever went out recently is resent.
+//
+// The server reports drops at most once a second, and a second more covers
+// the round trip, so a report concerns only commands sent within this window.
+export const RATE_LIMIT_SUSPECT_WINDOW_MS = 2_000;
+
+// Resending waits at least this long, past the per-second window the
+// dropped frames were counted in.
+export const RATE_LIMIT_COOLDOWN_MS = 1_000;
+
+// Bounds the extra load, and the extra usage, a rate limit can cause.
+export const MAXIMUM_PUBLISH_RESENDS = 1;
+
+// After this many rate limits in a row the limit is treated as a used-up
+// quota (per hour or per month): recent publishes are no longer resent, and
+// recent subscriptions wait for a quota probe.
+export const MAXIMUM_CONSECUTIVE_RATE_LIMITS = 8;
+
+// A used-up quota refuses every frame, so the subscriptions it dropped are
+// re-sent rarely rather than abandoned: first after a minute, then doubling.
+export const QUOTA_PROBE_FIRST_DELAY_MS = 60_000;
+
+export const QUOTA_PROBE_MAXIMUM_DELAY_MS = 3_600_000;
+
+// How often a full writer is checked again: the platform has no drain event.
+export const DRAIN_RETRY_MS = 50;
+
+// The error type the server sends for any rate limit.
+export const RATE_LIMIT_ERROR_TYPE = "RateLimitError";
+
+// Generated message ids share every receiver's dedup window with ids from
+// other publishers, so they are random and long enough never to collide.
+export const MESSAGE_ID_RANDOM_BYTES = 16;
+
 // Decoder bounds. These limit parsing work and recursion, not message size;
 // no legitimate server message approaches them.
 export const MAXIMUM_FRAGMENTS = 4096;

@@ -19,6 +19,7 @@ export function createTestChannel(overrides: Partial<ChannelInternals> = {}) {
     wall: 1_700_000_000_000,
     randomValue: 0,
   };
+  let generatedMessageIds = 0;
   const credentialProvider = vi.fn<CredentialProvider>(
     async () => testCredentials,
   );
@@ -32,6 +33,7 @@ export function createTestChannel(overrides: Partial<ChannelInternals> = {}) {
     clock: () => clocks.monotonic,
     wallClock: () => clocks.wall,
     random: () => clocks.randomValue,
+    generateMessageId: () => `generated-${(generatedMessageIds += 1)}`,
     ...overrides,
   });
 

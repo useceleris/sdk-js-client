@@ -7,6 +7,7 @@ import {
   textPayload,
 } from "../../src/payload";
 import {
+  GENERATED_MESSAGE_ID,
   connectedChannel,
   nextMessage,
   uniqueChannelReference,
@@ -71,7 +72,7 @@ describe("celeris payload formats", () => {
     );
 
     expect(Array.from(message.payload)).toEqual(Array.from(vector));
-    expect(message.messageId).toMatch(/^msg_/);
+    expect(message.messageId).toMatch(GENERATED_MESSAGE_ID);
 
     await publisher.close();
     await receiver.close();

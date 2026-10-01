@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { ServerError } from "../../src/index";
 import {
+  GENERATED_MESSAGE_ID,
   connectedChannel,
   nextError,
   nextMessage,
@@ -28,7 +29,7 @@ const settle = (ms = 1_500) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("celeris messaging", () => {
-  it("delivers binary payloads with server-assigned ids and per-connection echo", async () => {
+  it("delivers binary payloads with their ids and per-connection echo", async () => {
     const reference = uniqueChannelReference("msg");
     const publisher = await connectedChannel(reference);
     const receiver = await connectedChannel(reference);
@@ -45,8 +46,8 @@ describe("celeris messaging", () => {
       () => true,
       "cross-connection delivery",
     );
-    // REV-01 verification: the server always assigns an id.
-    expect(message.messageId).toMatch(/^msg_/);
+    // REV-01: the id the SDK generated arrives unchanged.
+    expect(message.messageId).toMatch(GENERATED_MESSAGE_ID);
     expect(message.messageId).not.toBe("");
     expect(text(message.payload)).toBe("hello-바이너리");
     expect(typeof message.timestamp).toBe("bigint");
@@ -260,4 +261,60 @@ describe("celeris messaging", () => {
     await writeOnly.close();
     await reader.close();
   });
+
+  it("recovers subscriptions the server drops under its rate limit", async () => {
+    const reference = uniqueChannelReference("limit");
+    // Separate token references keep separate per-connection limits.
+    const subscriber = await connectedChannel(reference, {
+      reference: "limit-subscriber",
+    });
+    const publisher = await connectedChannel(reference, {
+      reference: "limit-publisher",
+    });
+    let rateLimited = false;
+    subscriber.events().onError((error) => {
+      if (error instanceof ServerError && error.type === "RateLimitError")
+        rateLimited = true;
+    });
+
+    // The limiter tolerates bursts, so subscriptions go out in growing
+    // batches until one trips it; some of them are then dropped, and only
+    // recovery can restore them.
+    const segmentIds: string[] = [];
+    const delivered = new Set<string>();
+    while (!rateLimited && segmentIds.length < 2_000) {
+      for (let index = 0; index < 250; index += 1) {
+        const segmentId = `limit-${segmentIds.length}`;
+        segmentIds.push(segmentId);
+        subscriber.segment(segmentId).onMessage(() => delivered.add(segmentId));
+        subscriber.segment(segmentId).subscribe();
+      }
+
+      await settle(500);
+    }
+
+    expect(rateLimited, "the subscription burst must trip the limit").toBe(
+      true,
+    );
+
+    // Publishes to every segment not yet delivered, round after round, until
+    // each subscription has recovered. A publish the publisher's own limit
+    // drops is simply published again in the next round.
+    const deadline = Date.now() + 150_000;
+    while (delivered.size < segmentIds.length && Date.now() < deadline) {
+      await settle(3_000);
+      for (const segmentId of segmentIds) {
+        if (delivered.has(segmentId)) continue;
+        await publisher
+          .segment(segmentId)
+          .publish({ payload: utf8(segmentId) });
+        await settle(10);
+      }
+    }
+
+    expect(delivered.size).toBe(segmentIds.length);
+
+    await publisher.close();
+    await subscriber.close();
+  }, 180_000);
 });

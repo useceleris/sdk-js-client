@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  GENERATED_MESSAGE_ID,
   connectedChannel,
   nextMessage,
   uniqueChannelReference,
@@ -11,7 +12,7 @@ const settle = (ms = 1_500) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
 describe("celeris replay", () => {
-  it("replays recent messages with identical server-assigned ids", async () => {
+  it("replays recent messages with identical ids", async () => {
     const reference = uniqueChannelReference("replay");
     const publisher = await connectedChannel(reference);
     const liveReceiver = await connectedChannel(reference);
@@ -34,7 +35,7 @@ describe("celeris replay", () => {
     await liveReceiver.close();
 
     // A fresh connection with a replay lookback receives the same
-    // messages again, ids preserved (REV-01: all server-assigned).
+    // messages again, ids preserved (REV-01).
     const replayReceiver = await connectedChannel(reference, {
       replay: 60_000,
     });
@@ -59,7 +60,7 @@ describe("celeris replay", () => {
     );
     for (const [index, body] of ["one", "two", "three"].entries()) {
       expect(replayedByBody.get(body)).toBe(liveIds[index]);
-      expect(replayedByBody.get(body)).toMatch(/^msg_/);
+      expect(replayedByBody.get(body)).toMatch(GENERATED_MESSAGE_ID);
     }
 
     await publisher.close();

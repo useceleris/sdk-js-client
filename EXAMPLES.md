@@ -235,7 +235,7 @@ channel.events().onError((error) => {
       break;
     case "MessageSizeLimitError": // a publish exceeded your plan's size cap
       break;
-    case "RateLimitError": // too many messages; back off before retrying
+    case "RateLimitError": // the client pauses and resends; slow down if it persists
       break;
     case "ParserError": // the server could not parse a command
     case "SendError": // the server failed to deliver
@@ -331,7 +331,7 @@ Protobuf keeps payloads compact and schema-checked. Field numbers are the contra
 
 ## Replay, gaps and duplicates
 
-Reconnects request fresh credentials with a replay lookback covering the outage plus a five-second overlap, and joining a segment replays per the token's replay mode. Replayed messages carry their original server-assigned ids, and the client deduplicates within a bounded 1024-id window per channel — duplicates beyond it remain possible, which is why every `RecoveryEvent` declares `possibleGaps` and `possibleDuplicates`. There is no durable cursor: replay is bounded local recovery, not history.
+Reconnects request fresh credentials with a replay lookback covering the outage plus a five-second overlap, and joining a segment replays per the token's replay mode. Replayed messages carry their original ids, and the client deduplicates within a bounded 1024-id window per channel — duplicates beyond it remain possible, which is why every `RecoveryEvent` declares `possibleGaps` and `possibleDuplicates`. There is no durable cursor: replay is bounded local recovery, not history.
 
 Restoration treats the default segment the way connecting does. Named segments are rejoined with a fresh SUB on the new socket; the default segment needs none, because the server auto-joins it again on the new connection, so a listener on it keeps receiving with no action from the caller. A default presence interest _is_ re-sent, since presence was never part of that auto-join.
 

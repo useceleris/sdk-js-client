@@ -28,6 +28,10 @@ export const websocketUrl = () => requireEnvironment("CELERIS_WS_URL");
 export const clientId = () => requireEnvironment("CELERIS_CLIENT_ID");
 export const signingSecret = () => requireEnvironment("CELERIS_SIGNING_SECRET");
 
+// The SDK gives every publish its own id, which the server delivers as is
+// (RESEND-01): 16 random bytes, hex-encoded.
+export const GENERATED_MESSAGE_ID = /^[0-9a-f]{32}$/;
+
 let channelCounter = 0;
 export function uniqueChannelReference(label: string): string {
   channelCounter += 1;
