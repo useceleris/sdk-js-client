@@ -305,9 +305,16 @@ describe("celeris messaging", () => {
       await settle(3_000);
       for (const segmentId of segmentIds) {
         if (delivered.has(segmentId)) continue;
-        await publisher
-          .segment(segmentId)
-          .publish({ payload: utf8(segmentId) });
+        try {
+          await publisher
+            .segment(segmentId)
+            .publish({ payload: utf8(segmentId) });
+        } catch (error) {
+          // The publisher trips its own limit: sending pauses and the
+          // publish queue fills. Back off and let it drain.
+          if ((error as { code?: string }).code !== "Backpressure") throw error;
+          await settle(2_000);
+        }
         await settle(10);
       }
     }
