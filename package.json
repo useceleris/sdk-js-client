@@ -34,7 +34,8 @@
     "test": "vitest run",
     "test:celeris": "vitest run --config vitest.celeris.config.ts",
     "test:watch": "vitest",
-    "check": "npm run build && npm run typecheck && npm run format:check && npm run test"
+    "check": "npm run build && npm run typecheck && npm run format:check && npm run test",
+    "prepublishOnly": "npm run check"
   },
   "devDependencies": {
     "@msgpack/msgpack": "3.1.3",

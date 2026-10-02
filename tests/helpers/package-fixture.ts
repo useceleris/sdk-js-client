@@ -43,19 +43,16 @@ export function compileFixture(
   ]);
 }
 
-export function usePackageFixture(): () => {
-  consumerDirectory: string;
-  packedFiles: string[];
-} {
+export function usePackageFixture(): () => { consumerDirectory: string } {
   let temporaryDirectory: string;
-  let fixture: { consumerDirectory: string; packedFiles: string[] };
+  let fixture: { consumerDirectory: string };
 
   beforeAll(() => {
     temporaryDirectory = mkdtempSync(join(tmpdir(), "celeris-client-"));
     runNpm(["run", "build"]);
     const [artifact] = JSON.parse(
       runNpm(["pack", "--json", "--pack-destination", temporaryDirectory]),
-    ) as { filename: string; files: { path: string }[] }[];
+    ) as { filename: string }[];
     if (!artifact) {
       throw new Error("npm pack returned no artifact");
     }
@@ -75,10 +72,7 @@ export function usePackageFixture(): () => {
       ],
       consumerDirectory,
     );
-    fixture = {
-      consumerDirectory,
-      packedFiles: artifact.files.map((file) => file.path),
-    };
+    fixture = { consumerDirectory };
   });
   afterAll(() => {
     if (temporaryDirectory) {
