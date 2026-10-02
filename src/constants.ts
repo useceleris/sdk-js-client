@@ -101,6 +101,12 @@ export const RETRY_BASE_DELAY_MS = 500;
 
 export const RETRY_DELAY_CAP_MS = 30_000;
 
+// A rate limit already in hand disproves recovery only if commands flowed
+// unrefused for longer than the longest pause plus the report window; any
+// sooner, it may be a late report of the frames that just went out.
+export const QUOTA_RETURN_CONFIRMATION_MS =
+  RETRY_DELAY_CAP_MS + RATE_LIMIT_SUSPECT_WINDOW_MS;
+
 export const REPLAY_OVERLAP_MS = 5_000;
 
 // The server's largest replay lookback: an unsigned 32-bit millisecond count.

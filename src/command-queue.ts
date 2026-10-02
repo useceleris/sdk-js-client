@@ -8,6 +8,7 @@ import {
   MAXIMUM_PENDING_COMMANDS,
   MAXIMUM_PUBLISH_RESENDS,
   QUOTA_PROBE_FIRST_DELAY_MS,
+  QUOTA_RETURN_CONFIRMATION_MS,
   QUOTA_PROBE_MAXIMUM_DELAY_MS,
   RATE_LIMIT_COOLDOWN_MS,
   RATE_LIMIT_SUSPECT_WINDOW_MS,
@@ -153,11 +154,21 @@ export class CommandQueue {
 
     handle.send(bytes);
     this.pendingCommands += 1;
+    this.firstSentSinceRateLimitAt ??= this.delegates.clock();
   } // end method sendNow
 
   receiveRateLimit(): void {
+    // A limit arriving while sending is paused, with nothing sent since the
+    // last one, reports the same episode through another limit type (the
+    // server throttles each type separately). It carries nothing new.
+    if (
+      this.pauseTimer !== undefined &&
+      this.firstSentSinceRateLimitAt === undefined
+    )
+      return;
+
     const now = this.delegates.clock();
-    this.endProbingIfQuotaReturned(now);
+    this.endProbingIfQuotaReturned(now, QUOTA_RETURN_CONFIRMATION_MS);
 
     // While probing the streak holds, so a probe's own limit cannot start
     // another full run of resends.
@@ -168,7 +179,7 @@ export class CommandQueue {
     // and resending into it would never succeed.
     if (this.rateLimitStreak < MAXIMUM_CONSECUTIVE_RATE_LIMITS)
       this.requeueRecent(now);
-    else this.abandonRecent(now);
+    else this.abandonRecent();
 
     this.recentInterests = [];
     this.recentPublishes = [];
@@ -242,11 +253,12 @@ export class CommandQueue {
   } // end method requeueRecent
 
   // Recent publishes are dropped; recent subscriptions wait for a probe.
-  private abandonRecent(now: number): void {
-    for (const sent of this.recentInterests) {
-      if (now - sent.sentAt <= RATE_LIMIT_SUSPECT_WINDOW_MS)
-        this.abandonedInterests[sent.kind].add(sent.segmentId);
-    }
+  // Every subscription sent since the previous limit is handed to the probe,
+  // however late the report: syncs are idempotent, so over-abandoning costs
+  // at most a redundant frame, while missing one loses the subscription.
+  private abandonRecent(): void {
+    for (const sent of this.recentInterests)
+      this.abandonedInterests[sent.kind].add(sent.segmentId);
 
     const abandoned = INTEREST_KINDS.some(
       (kind) => this.abandonedInterests[kind].size > 0,
@@ -274,13 +286,13 @@ export class CommandQueue {
     }
   } // end method restoreAbandoned
 
-  // Commands that went a whole window without a rate limit following them
+  // Commands that went `quietSpanMs` without a rate limit following them
   // mean the quota is back: abandoned subscriptions are restored at once.
-  private endProbingIfQuotaReturned(now: number): void {
+  private endProbingIfQuotaReturned(now: number, quietSpanMs: number): void {
     if (
       this.probeCount === 0 ||
       this.firstSentSinceRateLimitAt === undefined ||
-      now - this.firstSentSinceRateLimitAt <= RATE_LIMIT_SUSPECT_WINDOW_MS
+      now - this.firstSentSinceRateLimitAt <= quietSpanMs
     )
       return;
 
@@ -295,7 +307,10 @@ export class CommandQueue {
     const handle = this.delegates.handle();
     if (!handle || this.pauseTimer !== undefined) return;
 
-    this.endProbingIfQuotaReturned(this.delegates.clock());
+    this.endProbingIfQuotaReturned(
+      this.delegates.clock(),
+      RATE_LIMIT_SUSPECT_WINDOW_MS,
+    );
 
     while (true) {
       const interest = this.nextReadyInterest();

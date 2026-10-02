@@ -876,6 +876,93 @@ describe("rate-limit recovery", () => {
     ]);
   });
 
+  it("counts one episode when several limit frames report the same burst", async () => {
+    const { channel } = await establish();
+    const socket = sockets.at(-1)!;
+    channel.segment("chat").subscribe();
+
+    // Eight episodes, each reported through two limit frames: still eight
+    // resend rounds, not a give-up at four.
+    for (let episode = 0; episode < 8; episode += 1) {
+      socket.send.mockClear();
+      socket.receive(rateLimitFrame());
+      socket.receive(rateLimitFrame());
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
+    }
+
+    socket.send.mockClear();
+    socket.receive(rateLimitFrame());
+    await vi.advanceTimersByTimeAsync(59_999);
+    expect(socket.send).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
+  });
+
+  it("treats a late report while probing as the quota still exhausted", async () => {
+    const { channel, clocks } = await establish();
+    const socket = sockets.at(-1)!;
+    channel.segment("chat").subscribe();
+    await exhaustRateLimit(socket);
+    socket.receive(rateLimitFrame());
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(sentFrames().at(-1)).toBe("@SUB\n$4\nchat\n");
+
+    // The dropped probe's report lands past the suspect window but far
+    // inside the confirmation span: probing continues, doubled.
+    clocks.monotonic += 2_500;
+    socket.send.mockClear();
+    socket.receive(rateLimitFrame());
+    await vi.advanceTimersByTimeAsync(119_999);
+    expect(socket.send).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
+  });
+
+  it("ends probing when a limit arrives long after accepted traffic", async () => {
+    const { channel, clocks } = await establish();
+    const socket = sockets.at(-1)!;
+    channel.segment("chat").subscribe();
+    await exhaustRateLimit(socket);
+    socket.receive(rateLimitFrame());
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    // The probe's frames were accepted; a limit far later is a new burst,
+    // handled with normal resend rounds again.
+    clocks.monotonic += 40_000;
+    socket.receive(rateLimitFrame());
+    channel.segment("lobby").subscribe();
+    socket.send.mockClear();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sentFrames()).toEqual(["@SUB\n$5\nlobby\n"]);
+
+    socket.receive(rateLimitFrame());
+    socket.send.mockClear();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sentFrames()).toEqual(["@SUB\n$5\nlobby\n"]);
+  });
+
+  it("counts a sent presence query as proof the quota returned", async () => {
+    const { channel, clocks } = await establish();
+    const socket = sockets.at(-1)!;
+    channel.segment("chat").subscribe();
+    await exhaustRateLimit(socket);
+    socket.receive(rateLimitFrame());
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    const query = channel
+      .segment("chat")
+      .presenceList({ page: 1, perPage: 25 });
+    query.catch(() => undefined);
+    clocks.monotonic += 2_500;
+    socket.send.mockClear();
+    channel.segment("lobby").subscribe();
+
+    expect(sentFrames()).toEqual(["@SUB\n$5\nlobby\n", "@SUB\n$4\nchat\n"]);
+  });
+
   it("resends at most the last 64 publishes", async () => {
     const { channel } = await establish();
     const socket = sockets.at(-1)!;
