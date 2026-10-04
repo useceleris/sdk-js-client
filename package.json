@@ -54,6 +54,7 @@
   },
   "license": "Apache-2.0",
   "author": "David Oyinbo (https://github.com/dev-davexoyinbo)",
+  "homepage": "https://useceleris.com/docs/sdks/javascript",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/useceleris/sdk-js-client.git"
