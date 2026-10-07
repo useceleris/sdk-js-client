@@ -30,17 +30,22 @@ CI intentionally runs one Linux job with Node 24, current Bun/Deno and the three
 
 All versions were written by npm using the authorized `@latest --save-exact` install commands. Restore with npm install; review unexpected manifest/lock changes. No manual version pins, downgrades or forced installs.
 
-| Dependency  | Installed | Role                       | License    | Declared Node engines      |
-| ----------- | --------- | -------------------------- | ---------- | -------------------------- |
-| zod         | 4.5.4     | Runtime command validation | MIT        | None declared              |
-| typescript  | 7.0.2     | Compilation/typechecking   | Apache-2.0 | >=16.20.0                  |
-| vitest      | 5.0.0     | Test orchestration         | MIT        | ^22.12.0 / ^24 / >=26      |
-| prettier    | 3.9.6     | Formatting                 | MIT        | >=14                       |
-| @types/node | 26.4.1    | Tooling declarations only  | MIT        | None declared              |
-| tsdown      | 0.23.0    | Direct CLI build           | MIT        | ^22.18.0 / ^24.11.0 / >=26 |
-| playwright  | 1.63.0    | Browser engine execution   | Apache-2.0 | >=20                       |
+| Dependency               | Installed | Role                                       | License    | Declared Node engines         |
+| ------------------------ | --------- | ------------------------------------------ | ---------- | ----------------------------- |
+| zod                      | 4.5.4     | Runtime command validation                 | MIT        | None declared                 |
+| typescript               | 7.0.2     | Compilation/typechecking                   | Apache-2.0 | >=16.20.0                     |
+| vitest                   | 5.0.0     | Test orchestration                         | MIT        | ^22.12.0 / ^24 / >=26         |
+| prettier                 | 3.9.6     | Formatting                                 | MIT        | >=14                          |
+| @types/node              | 26.4.1    | Tooling declarations only                  | MIT        | None declared                 |
+| tsdown                   | 0.23.0    | Direct CLI build                           | MIT        | ^22.18.0 / ^24.11.0 / >=26    |
+| playwright               | 1.63.0    | Browser engine execution                   | Apache-2.0 | >=20                          |
+| oxlint                   | 1.87.0    | Linting                                    | MIT        | ^20.19.0 / >=22.12.0          |
+| oxlint-tsgolint          | 7.0.2003  | Type-aware lint rules                      | MIT        | None declared                 |
+| @stylistic/eslint-plugin | 5.10.0    | Blank-line layout rules (oxlint JS plugin) | MIT        | ^18.18.0 / ^20.9.0 / >=21.1.0 |
 
 Metadata comes from installed package manifests; `npm audit --json` reported zero advisories at installation. This is current advisory evidence, not an independent security audit. Zod is the sole runtime dependency; there are no crypto, server SDK or WebSocket dependencies. Native binary framing remains package code because the Celeris grammar is not standard RESP.
+
+The linter is oxlint rather than ESLint with typescript-eslint: typescript-eslint 8.71.1 (latest) requires `typescript >=4.8.4 <6.1.0`, so npm refuses it beside TypeScript 7, and it needs the TypeScript 6 compiler API that TypeScript 7 no longer ships. oxlint-tsgolint is built on the TypeScript 7 compiler. `@stylistic/eslint-plugin` runs inside oxlint as a JS plugin and pulls in `eslint` as its peer dependency; nothing runs ESLint itself.
 
 Latest TypeScript/Vitest reproduce the server's third-party declaration failures: unresolved @vitest/expect/MarkOptions and benchmark-provider optionality. `skipLibCheck: true` is scoped to tooling only, after reproducing those errors. Production and installed declaration consumers retain full checking. tsdown also reports experimental TypeScript 7 API support. No dependency was downgraded; record/recheck these limitations when upgrading. The portability check uses the server's source/built-text checks rather than an unavailable TypeScript 7 compiler API.
 

@@ -36,6 +36,7 @@ beforeAll(async () => {
       directory,
     );
   }
+
   wsServer = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await new Promise<void>((resolve) => wsServer.once("listening", resolve));
   secureServer = createServer({ key: testPrivateKey, cert: testCertificate });
@@ -46,6 +47,7 @@ beforeAll(async () => {
   for (const server of [wsServer, secureSockets]) {
     server.on("connection", (socket, request) => {
       const url = new URL(request.url!, "http://localhost");
+
       if (
         url.pathname !== "/channel/room-1" ||
         url.searchParams.get("payload") !== "a+/=&%識" ||
@@ -54,20 +56,25 @@ beforeAll(async () => {
         socket.close();
         return;
       }
+
       socket.on("message", () =>
         socket.send("@SERVER_MSG\n:1\n$5\nhello\n", { binary: true }),
       );
     });
   }
+
   const wsAddress = wsServer.address();
   const secureAddress = secureServer.address();
+
   if (
     !wsAddress ||
     typeof wsAddress === "string" ||
     !secureAddress ||
     typeof secureAddress === "string"
-  )
+  ) {
     throw new Error("Missing test server address");
+  }
+
   wsUrl = `ws://127.0.0.1:${wsAddress.port}`;
   wssUrl = `wss://127.0.0.1:${secureAddress.port}`;
 });
@@ -78,8 +85,11 @@ afterAll(async () => {
     for (const client of server.clients) client.terminate();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
-  if (secureServer)
+
+  if (secureServer) {
     await new Promise<void>((resolve) => secureServer.close(() => resolve()));
+  }
+
   if (directory) rmSync(directory, { recursive: true, force: true });
 });
 
@@ -116,6 +126,7 @@ for (const runtime of runtimes) {
       );
     });
   }
+
   if (runtime.kind !== "deno") {
     test(`${runtime.name}: CommonJS native transport`, async () => {
       const script = `globalThis.transportConfiguration=${JSON.stringify({ baseUrl: wsUrl, rejectTls: false })};require(${JSON.stringify(join(directory, "transport-consumer.cjs"))});globalThis.transportResult.then(value=>console.log(JSON.stringify(value)));`;
@@ -129,9 +140,11 @@ for (const runtime of runtimes) {
     });
   }
 }
+
 for (const target of readBrowserTargets()) {
   test(`${target.name}: native transport and untrusted TLS rejection`, async () => {
     const browser = await target.launch();
+
     try {
       for (const rejectTls of [false, true]) {
         const page = await browser.newPage();
@@ -143,9 +156,11 @@ for (const target of readBrowserTargets()) {
           },
           { baseUrl: rejectTls ? wssUrl : wsUrl, rejectTls },
         );
+
         await page.addScriptTag({
           path: join(directory, "transport-consumer.iife.js"),
         });
+
         expect(
           await page.evaluate(() => Reflect.get(globalThis, "transportResult")),
         ).toEqual(

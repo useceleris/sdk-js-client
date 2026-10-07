@@ -1,10 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
+import { utf8 } from "../fixtures/codec-vectors";
 import {
+  createClientChannel,
   createTestChannel,
   flushMicrotasks,
   testCredentials,
 } from "../helpers/channel";
-import { sockets, useTestWebSockets } from "../helpers/websocket";
+import {
+  sockets,
+  TestWebSocket,
+  useTestWebSockets,
+} from "../helpers/websocket";
 
 useTestWebSockets();
 
@@ -15,7 +21,7 @@ async function connectChannel(setup = createTestChannel()) {
   await pending;
 
   return setup;
-}
+} // end function connectChannel
 
 describe("channel close", () => {
   it("is idempotent and returns the same promise", async () => {
@@ -119,6 +125,79 @@ describe("channel close", () => {
     expect(states).toEqual([]);
     expect(errors).toEqual([]);
     expect(channel.state).toBe("closed");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects a publish while closing and writes nothing", async () => {
+    const { channel } = await connectChannel();
+    vi.useFakeTimers();
+    sockets[0]!.close.mockImplementation(() => undefined);
+
+    const closing = channel.close();
+    expect(channel.state).toBe("closing");
+    await expect(
+      channel.defaultSegment().publish({ payload: utf8("x") }),
+    ).rejects.toMatchObject({
+      code: "NotConnected",
+      message: "Channel is not connected; it is closing.",
+    });
+    expect(sockets[0]!.send).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5_000);
+    await closing;
+  });
+
+  it("rejects publishes still queued at close with Cancelled", async () => {
+    const { channel } = await connectChannel();
+    vi.useFakeTimers();
+    sockets[0]!.bufferedAmount = 2 * 1024 * 1024; // the writer has no room
+
+    const lobby = channel.defaultSegment();
+    const queued = [
+      lobby.publish({ payload: utf8("one") }),
+      lobby.publish({ payload: utf8("two") }),
+    ];
+    await channel.close();
+
+    for (const publish of queued) {
+      await expect(publish).rejects.toMatchObject({
+        code: "Cancelled",
+        message: "Channel closed before the publish was sent.",
+      });
+    }
+
+    expect(sockets[0]!.send).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("leaves no timer or open socket after 50 connect and close cycles", async () => {
+    vi.useFakeTimers();
+
+    for (let cycle = 0; cycle < 50; cycle += 1) {
+      const { channel } = createClientChannel();
+      const pending = channel.connect();
+      await flushMicrotasks();
+
+      // Alternate between closing a connected channel and closing mid-handshake.
+      if (cycle % 2 === 0) {
+        sockets.at(-1)!.open();
+        await pending;
+        await channel.close();
+      } else {
+        const cancelled = expect(pending).rejects.toMatchObject({
+          code: "Cancelled",
+        });
+        await channel.close();
+        await cancelled;
+      }
+
+      expect(channel.state).toBe("closed");
+    }
+
+    expect(sockets).toHaveLength(50);
+    expect(
+      sockets.every((socket) => socket.readyState === TestWebSocket.CLOSED),
+    ).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
   });
 

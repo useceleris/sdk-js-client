@@ -5,7 +5,7 @@ import { utf8 } from "../fixtures/codec-vectors";
 
 function located(message: string, field: string, offset: number): string {
   return `${message} Field: ${field}, byte offset ${offset}.`;
-}
+} // end function located
 
 it.each([
   { wire: "", message: "Missing field marker.", field: "message", offset: 0 },
@@ -217,11 +217,13 @@ it("reports the field start for invalid UTF-8 without retaining input", () => {
     ...utf8("synthetic-secret\n"),
   ]);
   let failure: unknown;
+
   try {
     decodeServerMessage(bytes);
   } catch (error) {
     failure = error;
   }
+
   expect(failure).toMatchObject({
     code: "ProtocolError",
     message: located("Invalid UTF-8 text.", "tokenReference", 5),

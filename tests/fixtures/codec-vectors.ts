@@ -445,6 +445,7 @@ export const malformedVectors = [
   ),
   "@PRES_NOTIFY\n+s\n+u\n+c\n:1\n:123\n",
 ].map(utf8);
+
 malformedVectors.push(
   new Uint8Array([...utf8("@MSG\n+"), 255, ...utf8("\n+s\n$-1\n:1\n$0\n\n")]),
 );
@@ -485,6 +486,7 @@ export const invalidUtf8Vectors = [
   [0xf0, 0x9f, 0x98],
   [0xf4, 0x90, 0x80, 0x80],
 ];
+
 for (const bytes of invalidUtf8Vectors) {
   malformedVectors.push(
     new Uint8Array([
@@ -493,6 +495,7 @@ for (const bytes of invalidUtf8Vectors) {
       ...utf8("\n+s\n$-1\n:1\n$0\n\n"),
     ]),
   );
+
   decodingVectors.push({
     name: `opaque non-UTF8 payload ${bytes.join(",")}`,
     bytes: new Uint8Array([

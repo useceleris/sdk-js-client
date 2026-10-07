@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { createClient } from "../../src/index";
-import { signCredentials } from "./helpers/credentials";
+import { createClient, type CredentialRequest } from "../../src/index";
+import { signCredentials, signRawPayload } from "./helpers/credentials";
 import {
   clientId,
   connectedChannel,
@@ -30,6 +30,7 @@ describe("celeris authentication", () => {
     expect(
       notices.some((entry) => entry.includes("Successfully connected")),
     ).toBe(true);
+
     expect(notices.some((entry) => entry.includes('segment "default"'))).toBe(
       true,
     );
@@ -106,5 +107,81 @@ describe("celeris authentication", () => {
     });
     expect(channel.state).toBe("connected");
     await channel.close();
+  });
+
+  it.each([
+    [
+      "an empty reference",
+      () => JSON.stringify({ timestamp: Date.now(), reference: "" }),
+    ],
+    ["a payload that is not JSON", () => "not json"],
+    ["a payload without a timestamp", () => JSON.stringify({ reference: "x" })],
+    [
+      "a timestamp that is a string",
+      () => JSON.stringify({ timestamp: "now" }),
+    ],
+    [
+      "a timestamp 30 seconds in the future",
+      () => JSON.stringify({ timestamp: Date.now() + 30_000 }),
+    ],
+  ])("refuses %s as Transport", async (_label, payloadText) => {
+    const channel = createClient({
+      baseUrl: websocketUrl(),
+      allowInsecureLoopback: true,
+      credentialProvider: async () =>
+        signRawPayload(clientId(), signingSecret(), payloadText()),
+    }).channel(uniqueChannelReference("refused-claims"));
+
+    await expect(channel.connect()).rejects.toMatchObject({
+      code: "Transport",
+    });
+    expect(channel.state).toBe("failed");
+  });
+
+  it("accepts an empty channel restriction, which permits every channel", async () => {
+    const channel = await connectedChannel(uniqueChannelReference("any"), {
+      channelReferences: [],
+    });
+    expect(channel.state).toBe("connected");
+    await channel.close();
+  });
+
+  it("accepts a channel that is one of several in the restriction", async () => {
+    const reference = uniqueChannelReference("several");
+    const channel = await connectedChannel(reference, {
+      channelReferences: ["some-other-channel", reference],
+    });
+    expect(channel.state).toBe("connected");
+    await channel.close();
+  });
+
+  it("requests fresh credentials for every explicit connect", async () => {
+    const requests: CredentialRequest[] = [];
+    const client = createClient({
+      baseUrl: websocketUrl(),
+      allowInsecureLoopback: true,
+      credentialProvider: async (request) => {
+        requests.push(request);
+
+        return signCredentials(clientId(), signingSecret());
+      },
+    });
+    const reference = uniqueChannelReference("fresh");
+
+    const first = client.channel(reference);
+    await first.connect();
+    await first.close();
+    const second = client.channel(reference);
+    await second.connect();
+    await second.close();
+
+    expect(requests.map((request) => request.reason)).toEqual([
+      "initial",
+      "initial",
+    ]);
+
+    expect(
+      requests.every((request) => request.channelReference === reference),
+    ).toBe(true);
   });
 });

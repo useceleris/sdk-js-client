@@ -12,6 +12,7 @@ import { signCredentials, type SigningPayload } from "./credentials";
 
 function requireEnvironment(name: string): string {
   const value = process.env[name];
+
   if (!value) {
     throw new Error(
       `${name} is not set. Copy the three CELERIS_* values into a local ` +
@@ -25,14 +26,25 @@ function requireEnvironment(name: string): string {
 } // end function requireEnvironment
 
 export const websocketUrl = () => requireEnvironment("CELERIS_WS_URL");
+
 export const clientId = () => requireEnvironment("CELERIS_CLIENT_ID");
+
 export const signingSecret = () => requireEnvironment("CELERIS_SIGNING_SECRET");
+
+// Optional: a gateway that routes to a different server node, used for the
+// second connection of the cross-node tests. Without it, those tests skip,
+// because two connections through one gateway can share a node.
+export const hasPeerWebsocketUrl = () =>
+  Boolean(process.env.CELERIS_WS_URL_PEER);
+
+export const peerWebsocketUrl = () => requireEnvironment("CELERIS_WS_URL_PEER");
 
 // The SDK gives every publish its own id, which the server delivers as is
 // (RESEND-01): 16 random bytes, hex-encoded.
 export const GENERATED_MESSAGE_ID = /^[0-9a-f]{32}$/;
 
 let channelCounter = 0;
+
 export function uniqueChannelReference(label: string): string {
   channelCounter += 1;
 

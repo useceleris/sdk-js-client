@@ -12,6 +12,7 @@ it.each([
 ])("rejects unsafe URL %s", (url) => {
   expect(() => validateBaseUrl(url, true)).toThrow("Invalid connection URL.");
 });
+
 it.each(["localhost", "127.0.0.1", "127.1.2.3", "[::1]"])(
   "requires explicit opt-in for %s",
   (host) => {
@@ -19,12 +20,14 @@ it.each(["localhost", "127.0.0.1", "127.1.2.3", "[::1]"])(
     expect(validateBaseUrl(`ws://${host}`, true).protocol).toBe("ws:");
   },
 );
+
 it.each(["localhost.evil.test", "128.0.0.1", "0.0.0.0", "[::]"])(
   "rejects non-loopback %s",
   (host) => {
     expect(() => validateBaseUrl(`ws://${host}`, true)).toThrow();
   },
 );
+
 it.each(["", "x:y", "a\n", "é", "x".repeat(256)])(
   "rejects invalid channel %#",
   (channelReference) => {
@@ -36,6 +39,7 @@ it.each(["", "x:y", "a\n", "é", "x".repeat(256)])(
     ).toBe(false);
   },
 );
+
 it.each([
   "wss://example.test",
   "wss://example.test/",

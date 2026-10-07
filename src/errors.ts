@@ -4,8 +4,8 @@ export class ConfigurationError extends Error {
   constructor(message = "Invalid client command.") {
     super(message);
     this.name = "ConfigurationError";
-  }
-}
+  } // end constructor
+} // end class ConfigurationError
 
 export class ProtocolError extends Error {
   readonly code = "ProtocolError";
@@ -19,8 +19,8 @@ export class ProtocolError extends Error {
     // so neither repeats what the server sent.
     super(`${message} Field: ${field}, byte offset ${offset}.`);
     this.name = "ProtocolError";
-  }
-}
+  } // end constructor
+} // end class ProtocolError
 
 export type ConnectionErrorCode =
   | "Timeout"
@@ -38,8 +38,8 @@ export class ConnectionError extends Error {
   ) {
     super(message);
     this.name = "ConnectionError";
-  }
-}
+  } // end constructor
+} // end class ConnectionError
 
 // The server's own error types, one per RealtimeError variant (ERR-01).
 export type ServerErrorType =
@@ -68,5 +68,5 @@ export class ServerError extends Error {
   ) {
     super(message);
     this.name = "ServerError";
-  }
-}
+  } // end constructor
+} // end class ServerError

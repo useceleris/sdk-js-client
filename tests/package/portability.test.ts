@@ -6,16 +6,19 @@ import { repositoryRoot, runNpm } from "../helpers/commands";
 
 function listFiles(directory: string): string[] {
   const files: string[] = [];
+
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
+
     if (entry.isDirectory()) {
       files.push(...listFiles(path));
     } else {
       files.push(path);
     }
   }
+
   return files;
-}
+} // end function listFiles
 
 beforeAll(() => {
   runNpm(["run", "build"]);
@@ -38,8 +41,10 @@ test("portable source and output contain no runtime-specific dependencies or glo
     const quotedValues = source.matchAll(
       /(?:from\s*|import\s*\(|require\s*\()?["']([^"']+)["']/g,
     );
+
     for (const match of quotedValues) {
       const value = match[1];
+
       if (value !== undefined) {
         expect(builtins.has(value), file).toBe(false);
       }

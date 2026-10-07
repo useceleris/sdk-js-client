@@ -99,6 +99,7 @@ describe("command encoding", () => {
 
   it("names the failed field without repeating the input", () => {
     let failure: unknown;
+
     try {
       encodeClientCommand({
         command: "SECRET",
@@ -107,6 +108,7 @@ describe("command encoding", () => {
     } catch (error) {
       failure = error;
     }
+
     expect(failure).toBeInstanceOf(ConfigurationError);
     expect(failure).toMatchObject({
       code: "Configuration",
@@ -149,6 +151,7 @@ describe("identifier encoding isolation", () => {
           payload: new Uint8Array(),
         },
       ];
+
       for (const command of commands) {
         expect(() => encodeClientCommand(command)).toThrow(ConfigurationError);
       }

@@ -49,10 +49,20 @@ describe("channel type contracts", () => {
     expectTypeOf<
       ReturnType<ChannelEventHandler["onStateChange"]>
     >().toEqualTypeOf<() => void>();
+
     expectTypeOf<ReturnType<ChannelEventHandler["onRecovery"]>>().toEqualTypeOf<
       () => void
     >();
+
     expectTypeOf<ReturnType<ChannelEventHandler["onError"]>>().toEqualTypeOf<
+      () => void
+    >();
+
+    expectTypeOf<
+      Parameters<ChannelEventHandler["onMessage"]>[0]
+    >().toEqualTypeOf<MessageListener>();
+
+    expectTypeOf<ReturnType<ChannelEventHandler["onMessage"]>>().toEqualTypeOf<
       () => void
     >();
 
@@ -77,6 +87,7 @@ describe("channel type contracts", () => {
     expectTypeOf<MessageListener>().toEqualTypeOf<
       (payload: Uint8Array, metadata: MessageMetadata) => void
     >();
+
     expectTypeOf<
       Parameters<Segment["onMessage"]>[0]
     >().toEqualTypeOf<MessageListener>();
@@ -135,12 +146,15 @@ describe("channel type contracts", () => {
     expectTypeOf<ReturnType<ChannelEventHandler["onNotice"]>>().toEqualTypeOf<
       () => void
     >();
+
     expectTypeOf<
       Segment["subscribePresence"]
     >().returns.toEqualTypeOf<Subscription>();
+
     expectTypeOf<Segment["presenceList"]>().returns.toEqualTypeOf<
       Promise<PresencePage>
     >();
+
     expectTypeOf<Parameters<Segment["presenceList"]>[0]>().toEqualTypeOf<{
       readonly page: number;
       readonly perPage: number;
@@ -176,6 +190,7 @@ describe("channel type contracts", () => {
       readonly presenceQueryTimeoutMs?: number;
       readonly publishQueueSize?: number;
       readonly deduplicationWindowSize?: number;
+      readonly maximumReconnectAttempts?: number;
     }>();
   });
 
@@ -211,6 +226,7 @@ describe("channel type contracts", () => {
     expectTypeOf<
       ServerError["resource"]
     >().toEqualTypeOf<ServerErrorResource>();
+
     expectTypeOf<ServerErrorResource>().toEqualTypeOf<
       null | string | number | bigint | readonly ServerErrorResource[]
     >();
@@ -250,4 +266,5 @@ function verifySegmentIdRequired(channel: Channel): void {
   // @ts-expect-error a segment id is required; defaultSegment() names "default"
   channel.segment();
 } // end function verifySegmentIdRequired
+
 void verifySegmentIdRequired;

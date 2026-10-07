@@ -13,6 +13,7 @@ test("latest TypeScript resolves the installed portable entrypoint in each modul
     readFileSync(join(compilerDirectory, "package.json"), "utf8"),
   );
   const compiler = join(compilerDirectory, compilerPackage.bin.tsc);
+
   for (const mode of [
     { extension: "mts", module: "NodeNext", resolution: "NodeNext" },
     { extension: "cts", module: "NodeNext", resolution: "NodeNext" },
@@ -69,6 +70,7 @@ import { decodeServerMessage } from "@useceleris/client";
         files: [filename],
       }),
     );
+
     expect(() =>
       runCommand(
         process.execPath,

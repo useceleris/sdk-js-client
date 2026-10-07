@@ -18,13 +18,14 @@ export function runCommand(
     timeout: 60_000,
     env: { ...process.env, NO_COLOR: "1" },
   }).trim();
-}
+} // end function runCommand
 
 export function runNpm(
   argumentsList: string[],
   workingDirectory = repositoryRoot,
 ): string {
   const npmExecutable = process.env.npm_execpath;
+
   if (!npmExecutable) {
     throw new Error("Run tests through npm test (npm_execpath required)");
   }
@@ -34,4 +35,4 @@ export function runNpm(
     [npmExecutable, ...argumentsList],
     workingDirectory,
   );
-}
+} // end function runNpm

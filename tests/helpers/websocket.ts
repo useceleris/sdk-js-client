@@ -22,26 +22,26 @@ export class TestWebSocket extends EventTarget {
   constructor(readonly url: string) {
     super();
     sockets.push(this);
-  }
+  } // end constructor
 
   open(): void {
     this.readyState = TestWebSocket.OPEN;
     this.dispatchEvent(new Event("open"));
-  }
+  } // end method open
 
   receive(data: unknown): void {
     this.dispatchEvent(new MessageEvent("message", { data }));
-  }
+  } // end method receive
 
   fail(): void {
     this.dispatchEvent(new Event("error"));
-  }
+  } // end method fail
 
   disconnect(): void {
     this.readyState = TestWebSocket.CLOSED;
     this.dispatchEvent(new Event("close"));
-  }
-}
+  } // end method disconnect
+} // end class TestWebSocket
 
 export const sockets: TestWebSocket[] = [];
 
@@ -55,4 +55,4 @@ export function useTestWebSockets(): void {
     vi.unstubAllGlobals();
     sockets.length = 0;
   });
-}
+} // end function useTestWebSockets

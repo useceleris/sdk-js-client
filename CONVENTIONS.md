@@ -25,6 +25,6 @@ Reach for a named design pattern only when a concrete, present requirement deman
 
 ## Layout
 
-Leave one blank line after every closing block before the next statement. Details and the exceptions are in [code conventions](docs/code-conventions.md#breathing-room).
+Leave one blank line after every closing block before the next statement, and between top-level declarations and multi-line class members. Close every multi-line function, method and class with an end marker naming it: `} // end function describePath`, `} // end method connect`, `} // end constructor`, `} // end getter state`, `} // end class Channel`. `npm run lint` enforces both with oxlint; Prettier formats everything else. Details and the exceptions are in [code conventions](docs/code-conventions.md#breathing-room).
 
 Keep every fixed value in `src/constants.ts`, named in `SCREAMING_SNAKE_CASE`. Details are in [code conventions](docs/code-conventions.md#constants).

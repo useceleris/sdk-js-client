@@ -21,6 +21,7 @@ function startSignerEndpoint(): Promise<{ server: Server; url: string }> {
       response.writeHead(204).end();
       return;
     }
+
     response.writeHead(200, { "content-type": "application/json" });
     response.end(
       JSON.stringify(
@@ -32,8 +33,11 @@ function startSignerEndpoint(): Promise<{ server: Server; url: string }> {
   return new Promise((resolve) => {
     server.listen(0, "127.0.0.1", () => {
       const address = server.address();
-      if (!address || typeof address === "string")
+
+      if (!address || typeof address === "string") {
         throw new Error("Signer endpoint failed to bind.");
+      }
+
       resolve({ server, url: `http://127.0.0.1:${address.port}/` });
     });
   });
@@ -81,6 +85,7 @@ describe("celeris examples", () => {
       join(repositoryRoot, "examples/browser-quickstart.ts"),
       join(consumerDirectory, "browser-quickstart.ts"),
     );
+
     compileFixture(
       join(consumerDirectory, "browser-quickstart.ts"),
       "iife",
@@ -91,6 +96,7 @@ describe("celeris examples", () => {
     try {
       for (const target of readBrowserTargets()) {
         const browser = await target.launch();
+
         try {
           const page = await browser.newPage();
           await page.evaluate(
@@ -102,9 +108,11 @@ describe("celeris examples", () => {
             },
             [websocketUrl(), url],
           );
+
           await page.addScriptTag({
             path: join(bundleDirectory, "browser-quickstart.iife.js"),
           });
+
           await page.waitForFunction(
             () => Reflect.get(globalThis, "exampleResult") !== undefined,
             undefined,

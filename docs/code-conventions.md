@@ -24,7 +24,7 @@ C3 uses native WebSocket directly. `openConnection()` owns credential acquisitio
 
 ## Breathing room
 
-Leave one blank line after a block closes — `if`, `for`, `while`, `switch`, `try` — before the next statement. The only exceptions are a closing brace followed directly by `else`, `catch`, `finally` or another closing brace. Also leave one blank line between a declaration and a multi-line block that uses it.
+Leave one blank line after a block closes — `if`, `for`, `while`, `switch`, `try`, or a function body — before the next statement. The only exceptions are a closing brace followed directly by `else`, `catch`, `finally` or another closing brace. Also leave one blank line between a declaration and a multi-line block after it, around every top-level function, class, type, interface and export, between consecutive multi-line expression statements (such as `it(...)` cases), and between class members that span more than one line. A conditional whose body wraps onto another line takes braces.
 
 ```ts
 let message: ServerMessage;
@@ -38,7 +38,13 @@ try {
 deliver(message);
 ```
 
-Prettier keeps a single blank line but never adds one, so nothing enforces this automatically; it is checked in review. Code packed straight against the block before it is harder to read, and is treated as a defect.
+Close every function, method and class whose body spans more than one line with an end marker that names it — `} // end function describePath`, `} // end method connect`, `} // end constructor`, `} // end getter state`, `} // end setter name`, `} // end class Channel`. Object-literal methods count as methods, and the marker goes after any trailing comma (`}, // end method get`). Arrow functions and bodies that open and close on one line take none.
+
+Prettier keeps a single blank line but never adds one, so oxlint enforces the layout: `@stylistic/padding-line-between-statements`, `@stylistic/lines-between-class-members`, `curly` (`multi-line`) and the repository's own `celeris/end-markers` rule ([lint/end-markers.ts](../lint/end-markers.ts)), configured in [.oxlintrc.json](../.oxlintrc.json). `npm run lint -- --fix` inserts the missing lines, braces and end markers. Code packed straight against the block before it is harder to read, and is treated as a defect.
+
+## Linting
+
+`npm run lint` runs oxlint over `src`, `tests` (the live `tests/celeris` suites included), `examples`, `lint` and the config files. It runs oxlint's correctness rules and the typescript-eslint recommended and recommended-type-checked rules that oxlint implements, with type information from `oxlint-tsgolint`, which is built on the TypeScript 7 compiler. Tests and examples turn off the `no-unsafe-*` rules: they cross untyped boundaries on purpose (`JSON.parse`, `page.evaluate`, `expect.any`, the CommonJS fixture's `require`). `tests/tsconfig.json` is the test and config typecheck project, and is where the type-aware rules find test types. Prettier formats; oxlint enables no rule that formats, so the two never disagree.
 
 ## Constants
 

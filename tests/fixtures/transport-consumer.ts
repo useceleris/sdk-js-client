@@ -11,6 +11,7 @@ async function exerciseTransport(): Promise<unknown> {
   const received = new Promise<ServerMessage>((resolve) => {
     receive = resolve;
   });
+
   try {
     const transport = await openConnection(
       {
@@ -35,9 +36,12 @@ async function exerciseTransport(): Promise<unknown> {
         message.command === "SERVER_MSG" ? Array.from(message.payload) : null,
     };
   } catch (error) {
-    if (configuration.rejectTls && error instanceof Error && "code" in error)
+    if (configuration.rejectTls && error instanceof Error && "code" in error) {
       return { code: error.code };
+    }
+
     throw error;
   }
-}
+} // end function exerciseTransport
+
 Object.assign(globalThis, { transportResult: exerciseTransport() });

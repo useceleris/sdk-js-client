@@ -41,7 +41,7 @@ export function compileFixture(
           "@useceleris/client",
         ]),
   ]);
-}
+} // end function compileFixture
 
 export function usePackageFixture(): () => { consumerDirectory: string } {
   let temporaryDirectory: string;
@@ -53,15 +53,18 @@ export function usePackageFixture(): () => { consumerDirectory: string } {
     const [artifact] = JSON.parse(
       runNpm(["pack", "--json", "--pack-destination", temporaryDirectory]),
     ) as { filename: string }[];
+
     if (!artifact) {
       throw new Error("npm pack returned no artifact");
     }
+
     const consumerDirectory = join(temporaryDirectory, "consumer");
     mkdirSync(consumerDirectory);
     writeFileSync(
       join(consumerDirectory, "package.json"),
       JSON.stringify({ private: true, type: "module" }),
     );
+
     runNpm(
       [
         "install",
@@ -74,10 +77,11 @@ export function usePackageFixture(): () => { consumerDirectory: string } {
     );
     fixture = { consumerDirectory };
   });
+
   afterAll(() => {
     if (temporaryDirectory) {
       rmSync(temporaryDirectory, { recursive: true, force: true });
     }
   });
   return () => fixture;
-}
+} // end function usePackageFixture

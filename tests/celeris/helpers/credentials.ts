@@ -26,15 +26,23 @@ export function signCredentials(
   const wirePayload: Record<string, unknown> = {
     timestamp: payload.timestamp ?? Date.now(),
   };
-  if (payload.reference !== undefined)
+
+  if (payload.reference !== undefined) {
     wirePayload.reference = payload.reference;
-  if (payload.channelReferences !== undefined)
+  }
+
+  if (payload.channelReferences !== undefined) {
     wirePayload.channel_references = payload.channelReferences;
-  if (payload.tokenPermission !== undefined)
+  }
+
+  if (payload.tokenPermission !== undefined) {
     wirePayload.token_permission = payload.tokenPermission;
+  }
+
   if (payload.replay !== undefined) wirePayload.replay = payload.replay;
-  if (payload.allowEcho !== undefined)
+  if (payload.allowEcho !== undefined) {
     wirePayload.allow_echo = payload.allowEcho;
+  }
 
   const encodedPayload = Buffer.from(
     JSON.stringify(wirePayload),
@@ -49,3 +57,21 @@ export function signCredentials(
 
   return { payload: encodedPayload, signature };
 } // end function signCredentials
+
+// Signs any payload text as it is, for claims the typed payload cannot
+// express (malformed JSON, missing or wrongly typed fields).
+export function signRawPayload(
+  clientId: string,
+  signingSecret: string,
+  payloadText: string,
+): Credentials {
+  const encodedPayload = Buffer.from(payloadText, "utf8").toString("base64");
+  const digestHex = createHmac("sha512", signingSecret)
+    .update(encodedPayload, "ascii")
+    .digest("hex");
+  const signature = Buffer.from(`${clientId}:${digestHex}`, "utf8").toString(
+    "base64",
+  );
+
+  return { payload: encodedPayload, signature };
+} // end function signRawPayload

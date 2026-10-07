@@ -36,4 +36,4 @@ export function readBrowserTargets(): BrowserTarget[] {
   }
 
   return targets;
-}
+} // end function readBrowserTargets

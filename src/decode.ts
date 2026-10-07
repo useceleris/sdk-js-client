@@ -401,14 +401,13 @@ export class MessageDecoder {
 
   private readErrorMessage(depth: number): ServerMessage {
     const fieldStartOffset = this.offset - 1;
+    const header = this.readText(
+      this.readLine("error", fieldStartOffset, 3),
+      "error",
+      fieldStartOffset,
+    );
 
-    if (
-      this.readText(
-        this.readLine("error", fieldStartOffset, 3),
-        "error",
-        fieldStartOffset,
-      ) !== "Err"
-    ) {
+    if (header !== "Err") {
       throw new ProtocolError(
         "Invalid error header.",
         "error",
@@ -500,6 +499,7 @@ export class MessageDecoder {
           ? null
           : this.readText(bytes, "resource", fieldStartOffset);
       }
+
       case ":".charCodeAt(0):
         return this.readDecimal("resource", fieldStartOffset);
       case ";".charCodeAt(0):
@@ -514,6 +514,7 @@ export class MessageDecoder {
 
         return items;
       }
+
       default:
         throw new ProtocolError(
           "Unexpected resource marker.",
@@ -552,8 +553,8 @@ export class MessageDecoder {
   ): ServerMessage {
     // A command this version does not know carries an unknown number of
     // fields, so its end is only knowable when it runs to the end of the
-    // transport message. Newer servers may add commands; skipping them keeps this client
-    // working instead of killing its connection (DECODE-01).
+    // transport message. Newer servers may add commands; skipping them keeps
+    // this client working instead of killing its connection (DECODE-01).
     if (depth !== 0 && !tail) {
       throw new ProtocolError(
         "Unknown command inside array has ambiguous boundaries.",

@@ -1,6 +1,7 @@
+import type { ChannelError } from "./channel";
 import type { ConnectionHandle } from "./connection";
 import { encodeClientCommand } from "./encode";
-import { ConfigurationError, ConnectionError } from "./errors";
+import { ConnectionError } from "./errors";
 import { computeRetryDelayMs } from "./reconnect";
 import {
   DRAIN_RETRY_MS,
@@ -43,7 +44,7 @@ type QueuedPublish = {
   readonly sequence: number;
   resends: number;
   // Settles the caller's promise; undefined once settled.
-  settle: ((error?: ConfigurationError | ConnectionError) => void) | undefined;
+  settle: ((error?: ChannelError) => void) | undefined;
 };
 
 const INTEREST_KINDS: readonly InterestKind[] = ["message", "presence"];
@@ -53,10 +54,13 @@ const INTEREST_KINDS: readonly InterestKind[] = ["message", "presence"];
 // says which frame a rate limit dropped, so everything sent within the suspect
 // window is resent: subscriptions as their current state, publishes once and
 // with their original message id, so receivers drop any copy that got through.
+// Waiting publishes outlive a dropped socket and go out on the next one, after
+// the restored subscriptions (QUEUE-01).
 export class CommandQueue {
   // Segment → the sequence of its latest change.
   private readonly pendingInterests: Record<InterestKind, Map<string, number>> =
     { message: new Map(), presence: new Map() };
+
   private publishes: QueuedPublish[] = [];
   private sequence = 0;
   private recentInterests: {
@@ -64,11 +68,13 @@ export class CommandQueue {
     readonly segmentId: string;
     readonly sentAt: number;
   }[] = [];
+
   // Holds payloads, so it keeps no more than MAXIMUM_PENDING_COMMANDS.
   private recentPublishes: {
     readonly publish: QueuedPublish;
     readonly sentAt: number;
   }[] = [];
+
   private pendingCommands = 0;
   private drainTimer: ReturnType<typeof setTimeout> | undefined;
   private pauseTimer: ReturnType<typeof setTimeout> | undefined;
@@ -80,6 +86,7 @@ export class CommandQueue {
     message: new Set(),
     presence: new Set(),
   };
+
   private probeTimer: ReturnType<typeof setTimeout> | undefined;
   private probeCount = 0;
   private firstSentSinceRateLimitAt: number | undefined;
@@ -100,13 +107,14 @@ export class CommandQueue {
     bytes: Uint8Array,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (this.publishes.length >= this.publishQueueSize)
+    if (this.publishes.length >= this.publishQueueSize) {
       return Promise.reject(
         new ConnectionError(
           "Backpressure",
-          `${this.publishQueueSize} publishes are already waiting to be sent. Retry once some have gone out.`,
+          `The publish queue is full (size ${this.publishQueueSize}). Retry once some publishes have gone out.`,
         ),
       );
+    }
 
     return new Promise<void>((resolve, reject) => {
       const withdraw = (): void => {
@@ -143,17 +151,19 @@ export class CommandQueue {
 
   // For commands that are never queued or resent, such as presence queries.
   sendNow(handle: ConnectionHandle, bytes: Uint8Array): void {
-    if (this.pauseTimer !== undefined)
+    if (this.pauseTimer !== undefined) {
       throw new ConnectionError(
         "Backpressure",
         "Sending is paused after a rate limit; try again in a moment.",
       );
+    }
 
-    if (!this.hasRoom(handle))
+    if (!this.hasRoom(handle)) {
       throw new ConnectionError(
         "Backpressure",
         `Command writer is full: ${MAXIMUM_PENDING_COMMANDS} commands are waiting to be sent. Retry once the socket has flushed them.`,
       );
+    }
 
     handle.send(bytes);
     this.pendingCommands += 1;
@@ -167,22 +177,26 @@ export class CommandQueue {
     if (
       this.pauseTimer !== undefined &&
       this.firstSentSinceRateLimitAt === undefined
-    )
+    ) {
       return;
+    }
 
     const now = this.delegates.clock();
     this.endProbingIfQuotaReturned(now, QUOTA_RETURN_CONFIRMATION_MS);
 
     // While probing the streak holds, so a probe's own limit cannot start
     // another full run of resends.
-    if (this.probeCount === 0 && now > this.rateLimitStreakEndsAt)
+    if (this.probeCount === 0 && now > this.rateLimitStreakEndsAt) {
       this.rateLimitStreak = 0;
+    }
 
     // A limit that keeps returning is a used-up quota rather than a burst,
     // and resending into it would never succeed.
-    if (this.rateLimitStreak < MAXIMUM_CONSECUTIVE_RATE_LIMITS)
+    if (this.rateLimitStreak < MAXIMUM_CONSECUTIVE_RATE_LIMITS) {
       this.requeueRecent(now);
-    else this.abandonRecent();
+    } else {
+      this.abandonRecent();
+    }
 
     this.recentInterests = [];
     this.recentPublishes = [];
@@ -201,10 +215,34 @@ export class CommandQueue {
     }, delay);
   } // end method receiveRateLimit
 
-  // Nothing carries over to the next socket, which re-syncs every
-  // subscription itself, and waiting publishes fail. The rate-limit streak
-  // and the probe schedule stay: a reconnect does not refill a quota.
-  reset(error: ConnectionError): void {
+  // Restored subscriptions go ahead of every waiting publish, even one queued
+  // earlier to the same segment, so the connection is a member of its
+  // segments again before the publishes join them (QUEUE-01). Drains once
+  // all are marked, so no publish slips between them.
+  restoreInterests(
+    interests: readonly { kind: InterestKind; segmentId: string }[],
+  ): void {
+    for (const { kind, segmentId } of interests) {
+      this.pendingInterests[kind].set(segmentId, 0);
+    }
+
+    this.drain();
+  } // end method restoreInterests
+
+  // Waiting publishes fail with the error, and the socket state is cleared.
+  reset(error: ChannelError): void {
+    this.resetConnectionState();
+
+    const publishes = this.publishes;
+    this.publishes = [];
+    for (const publish of publishes) publish.settle?.(error);
+  } // end method reset
+
+  // Nothing tied to the lost socket carries over: the next socket re-syncs
+  // every subscription itself, and nothing it was handed is resent. Waiting
+  // publishes stay for the next socket. The rate-limit streak and the probe
+  // schedule stay too: a reconnect does not refill a quota.
+  resetConnectionState(): void {
     clearTimeout(this.drainTimer);
     clearTimeout(this.pauseTimer);
     clearTimeout(this.probeTimer);
@@ -221,11 +259,7 @@ export class CommandQueue {
     this.recentPublishes = [];
     this.pendingCommands = 0;
     this.firstSentSinceRateLimitAt = undefined;
-
-    const publishes = this.publishes;
-    this.publishes = [];
-    for (const publish of publishes) publish.settle?.(error);
-  } // end method reset
+  } // end method resetConnectionState
 
   // A newer change takes a newer sequence, so the sync follows every publish
   // queued before it.
@@ -236,8 +270,9 @@ export class CommandQueue {
 
   private requeueRecent(now: number): void {
     for (const sent of this.recentInterests) {
-      if (now - sent.sentAt <= RATE_LIMIT_SUSPECT_WINDOW_MS)
+      if (now - sent.sentAt <= RATE_LIMIT_SUSPECT_WINDOW_MS) {
         this.markInterest(sent.kind, sent.segmentId);
+      }
     }
 
     const resent: QueuedPublish[] = [];
@@ -260,8 +295,9 @@ export class CommandQueue {
   // however late the report: syncs are idempotent, so over-abandoning costs
   // at most a redundant frame, while missing one loses the subscription.
   private abandonRecent(): void {
-    for (const sent of this.recentInterests)
+    for (const sent of this.recentInterests) {
       this.abandonedInterests[sent.kind].add(sent.segmentId);
+    }
 
     const abandoned = INTEREST_KINDS.some(
       (kind) => this.abandonedInterests[kind].size > 0,
@@ -282,8 +318,9 @@ export class CommandQueue {
 
   private restoreAbandoned(): void {
     for (const kind of INTEREST_KINDS) {
-      for (const segmentId of this.abandonedInterests[kind])
+      for (const segmentId of this.abandonedInterests[kind]) {
         this.markInterest(kind, segmentId);
+      }
 
       this.abandonedInterests[kind].clear();
     }
@@ -296,8 +333,9 @@ export class CommandQueue {
       this.probeCount === 0 ||
       this.firstSentSinceRateLimitAt === undefined ||
       now - this.firstSentSinceRateLimitAt <= quietSpanMs
-    )
+    ) {
       return;
+    }
 
     clearTimeout(this.probeTimer);
     this.probeTimer = undefined;
@@ -319,8 +357,9 @@ export class CommandQueue {
       const interest = this.nextReadyInterest();
 
       if (interest) {
-        if (!this.sendInterest(handle, interest.kind, interest.segmentId))
+        if (!this.sendInterest(handle, interest.kind, interest.segmentId)) {
           return;
+        }
 
         continue;
       }
@@ -389,7 +428,7 @@ export class CommandQueue {
       sent = this.write(handle, publish.bytes);
     } catch (error) {
       this.publishes.shift();
-      publish.settle?.(error as ConfigurationError | ConnectionError);
+      publish.settle?.(error as ChannelError);
       return true;
     }
 

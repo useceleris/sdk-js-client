@@ -78,11 +78,11 @@ export class ConnectionHandle {
         "WebSocket send threw after the command was handed over, so it may or may not have been sent.",
       );
     }
-  }
+  } // end method send
 
   get bufferedAmount(): number {
     return this.socket.bufferedAmount;
-  }
+  } // end getter bufferedAmount
 
   close(): void {
     if (this.closed) return;
@@ -101,14 +101,16 @@ export class ConnectionHandle {
         // Handle remains closed when native close fails.
       }
     }
-  }
-}
+  } // end method close
+} // end class ConnectionHandle
 
 export async function openConnection(
   configuration: ConnectionConfiguration,
   options: ConnectionOptions,
 ): Promise<ConnectionHandle> {
-  const config = getSafeParsedConnectionConfiguration(configuration);
+  const parsedConfiguration =
+    getSafeParsedConnectionConfiguration(configuration);
+
   if (
     typeof options?.credentialProvider !== "function" ||
     typeof options.onMessage !== "function"
@@ -130,7 +132,10 @@ export async function openConnection(
     );
   }
 
-  const baseUrl = validateBaseUrl(config.baseUrl, config.allowInsecureLoopback);
+  const baseUrl = validateBaseUrl(
+    parsedConfiguration.baseUrl,
+    parsedConfiguration.allowInsecureLoopback,
+  );
   const controller = new AbortController();
 
   return new Promise<ConnectionHandle>((resolve, reject) => {
@@ -186,6 +191,7 @@ export async function openConnection(
           "WebSocket handshake failed: the server refused the connection or could not be reached. Check the base URL, the credentials and the channel reference.",
         ),
       );
+
     const opened = (): void => {
       if (settled || !socket) return;
       settled = true;
@@ -200,7 +206,7 @@ export async function openConnection(
     }
 
     void requestCredentialsAndOpenSocket(
-      config,
+      parsedConfiguration,
       baseUrl,
       options.credentialProvider,
       controller.signal,
@@ -216,10 +222,10 @@ export async function openConnection(
       },
     );
   });
-}
+} // end function openConnection
 
 async function requestCredentialsAndOpenSocket(
-  config: ReturnType<typeof getSafeParsedConnectionConfiguration>,
+  parsedConfiguration: ReturnType<typeof getSafeParsedConnectionConfiguration>,
   baseUrl: URL,
   credentialProvider: CredentialProvider,
   signal: AbortSignal,
@@ -233,8 +239,8 @@ async function requestCredentialsAndOpenSocket(
 
   try {
     providedCredentials = await credentialProvider({
-      channelReference: config.channelReference,
-      ...config.recovery,
+      channelReference: parsedConfiguration.channelReference,
+      ...parsedConfiguration.recovery,
       signal,
     });
   } catch {
@@ -262,7 +268,11 @@ async function requestCredentialsAndOpenSocket(
 
   try {
     const socket = new WebSocket(
-      createCredentialUrl(baseUrl, config.channelReference, credentials),
+      createCredentialUrl(
+        baseUrl,
+        parsedConfiguration.channelReference,
+        credentials,
+      ),
     );
     attempt.onSocket(socket);
     socket.binaryType = "arraybuffer";
@@ -272,7 +282,7 @@ async function requestCredentialsAndOpenSocket(
       new ConnectionError("Transport", "WebSocket creation failed."),
     );
   }
-}
+} // end function requestCredentialsAndOpenSocket
 
 function createHandle(
   socket: WebSocket,
@@ -303,6 +313,7 @@ function createHandle(
   // one. Dropping it costs exactly that frame, which is why these report
   // without closing the socket (DECODE-01).
   const reportFrameError = (error: ProtocolError): void => report(error);
+
   const receiveMessage = (event: MessageEvent): void => {
     if (!(event.data instanceof ArrayBuffer)) {
       reportFrameError(
@@ -333,6 +344,7 @@ function createHandle(
 
   const receiveError = (): void =>
     reportError(new ConnectionError("Transport", "WebSocket failed."));
+
   const receiveClose = (): void => {
     // The once-only close listener has already detached itself; closing the
     // handle detaches the data listeners and marks it closed.
@@ -349,4 +361,4 @@ function createHandle(
   socket.addEventListener("error", receiveError);
   socket.addEventListener("close", receiveClose, { once: true });
   return handle;
-}
+} // end function createHandle

@@ -4,6 +4,7 @@ blockImportSideEffects();
 const client = require("@useceleris/client");
 
 let privatePathBlocked = false;
+
 try {
   require("@useceleris/client/dist/index.cjs");
 } catch {

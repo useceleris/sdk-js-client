@@ -49,6 +49,7 @@ async function main(): Promise<void> {
   ) {
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+
   await channel.close();
 
   globalThis.exampleResult = {

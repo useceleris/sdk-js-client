@@ -11,23 +11,36 @@ import {
   DEDUP_WINDOW_SIZE,
   DEFAULT_BASE_URL,
   DEFAULT_CONNECT_TIMEOUT_MS,
+  DEFAULT_MAXIMUM_RECONNECT_ATTEMPTS,
   DEFAULT_PRESENCE_QUERY_TIMEOUT_MS,
   MAXIMUM_PENDING_COMMANDS,
+  MAXIMUM_RECONNECT_ATTEMPTS_CEILING,
+  MAXIMUM_TIMEOUT_MS,
 } from "./constants";
 
 const clientOptionsSchema = z.object({
   baseUrl: z.string().min(1).default(DEFAULT_BASE_URL),
   allowInsecureLoopback: z.boolean().default(false),
-  connectTimeoutMs: z.int().min(1).default(DEFAULT_CONNECT_TIMEOUT_MS),
+  connectTimeoutMs: z
+    .int()
+    .min(1)
+    .max(MAXIMUM_TIMEOUT_MS)
+    .default(DEFAULT_CONNECT_TIMEOUT_MS),
   // Defaults to the resolved connectTimeoutMs, applied after parsing: a zod
   // field cannot default to a sibling.
-  reconnectTimeoutMs: z.int().min(1).optional(),
+  reconnectTimeoutMs: z.int().min(1).max(MAXIMUM_TIMEOUT_MS).optional(),
   presenceQueryTimeoutMs: z
     .int()
     .min(1)
+    .max(MAXIMUM_TIMEOUT_MS)
     .default(DEFAULT_PRESENCE_QUERY_TIMEOUT_MS),
   publishQueueSize: z.int().min(1).default(MAXIMUM_PENDING_COMMANDS),
   deduplicationWindowSize: z.int().min(1).default(DEDUP_WINDOW_SIZE),
+  maximumReconnectAttempts: z
+    .int()
+    .min(1)
+    .max(MAXIMUM_RECONNECT_ATTEMPTS_CEILING)
+    .default(DEFAULT_MAXIMUM_RECONNECT_ATTEMPTS),
 });
 
 export type ClientOptions = {
@@ -39,6 +52,9 @@ export type ClientOptions = {
   readonly presenceQueryTimeoutMs?: number;
   readonly publishQueueSize?: number;
   readonly deduplicationWindowSize?: number;
+  // Failed reconnect attempts, within one retry budget, before the channel
+  // fails: an integer from 1 to 100, default 10 (CONFIG-01).
+  readonly maximumReconnectAttempts?: number;
 };
 
 export class Client {
@@ -49,20 +65,23 @@ export class Client {
   private readonly presenceQueryTimeoutMs: number;
   private readonly publishQueueSize: number;
   private readonly deduplicationWindowSize: number;
+  private readonly maximumReconnectAttempts: number;
   private readonly credentialProvider: CredentialProvider;
 
   constructor(options: ClientOptions) {
-    if (typeof options?.credentialProvider !== "function")
+    if (typeof options?.credentialProvider !== "function") {
       throw new ConfigurationError(
         "Invalid client options. credentialProvider: Must be a function.",
       );
+    }
 
     const parsed = clientOptionsSchema.safeParse(options);
 
-    if (!parsed.success)
+    if (!parsed.success) {
       throw new ConfigurationError(
         describeParseError("client options", parsed.error),
       );
+    }
 
     validateBaseUrl(parsed.data.baseUrl, parsed.data.allowInsecureLoopback);
 
@@ -74,16 +93,18 @@ export class Client {
     this.presenceQueryTimeoutMs = parsed.data.presenceQueryTimeoutMs;
     this.publishQueueSize = parsed.data.publishQueueSize;
     this.deduplicationWindowSize = parsed.data.deduplicationWindowSize;
+    this.maximumReconnectAttempts = parsed.data.maximumReconnectAttempts;
     this.credentialProvider = options.credentialProvider;
   } // end constructor
 
   channel(reference: string): Channel {
     const parsed = channelReferenceSchema.safeParse(reference);
 
-    if (!parsed.success)
+    if (!parsed.success) {
       throw new ConfigurationError(
         describeParseError("channel reference", parsed.error),
       );
+    }
 
     return new Channel({
       baseUrl: this.baseUrl,
@@ -94,6 +115,7 @@ export class Client {
       presenceQueryTimeoutMs: this.presenceQueryTimeoutMs,
       publishQueueSize: this.publishQueueSize,
       deduplicationWindowSize: this.deduplicationWindowSize,
+      maximumReconnectAttempts: this.maximumReconnectAttempts,
       credentialProvider: this.credentialProvider,
       clock: monotonicNow,
       wallClock: Date.now,

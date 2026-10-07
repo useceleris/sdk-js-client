@@ -48,6 +48,7 @@ const expectedCodec = JSON.parse(
 
 beforeAll(() => {
   const { consumerDirectory } = getFixture();
+
   for (const [entry, format] of [
     ["consumer.ts", "esm"],
     ["consumer-require.ts", "cjs"],
@@ -61,16 +62,19 @@ beforeAll(() => {
       entry !== "codec-consumer.ts",
     );
   }
+
   compileFixture(
     join(repositoryRoot, "tests/fixtures/codec-consumer.ts"),
     "iife",
     join(consumerDirectory, "browser-codec"),
   );
+
   // Resolve browser imports from the installed tarball, not the repository.
   copyFileSync(
     join(repositoryRoot, "tests/fixtures/browser-consumer.ts"),
     join(consumerDirectory, "browser-consumer.ts"),
   );
+
   compileFixture(
     join(consumerDirectory, "browser-consumer.ts"),
     "iife",
@@ -84,6 +88,7 @@ for (const runtime of runtimes) {
       runConsumer(runtime, "consumer.js", getFixture().consumerDirectory),
     ).toEqual({ exports: expectedExports, privatePathBlocked: true });
   });
+
   test(`${runtime.name}: codec vectors`, () => {
     expect(
       runConsumer(runtime, "codec-consumer.js", getFixture().consumerDirectory),
@@ -99,6 +104,7 @@ for (const runtime of runtimes) {
         ),
       ).toEqual({ exports: expectedExports, privatePathBlocked: true });
     });
+
     test(`${runtime.name}: CommonJS codec vectors`, () => {
       expect(
         runConsumer(
@@ -114,6 +120,7 @@ for (const runtime of runtimes) {
 for (const target of readBrowserTargets()) {
   test(`${target.name}: installed package bundle and codec vectors`, async () => {
     const browser = await target.launch();
+
     try {
       const page = await browser.newPage();
       await page.evaluate(() => {
@@ -128,25 +135,29 @@ for (const target of readBrowserTargets()) {
             configurable: true,
             get() {
               throw new Error(`Package import accessed ${name}`);
-            },
+            }, // end method get
           });
         }
       });
+
       await page.addScriptTag({
         path: join(
           getFixture().consumerDirectory,
           "browser-package/browser-consumer.iife.js",
         ),
       });
+
       expect(
         await page.evaluate(() => Reflect.get(globalThis, "clientExports")),
       ).toEqual(expectedExports);
+
       await page.addScriptTag({
         path: join(
           getFixture().consumerDirectory,
           "browser-codec/codec-consumer.iife.js",
         ),
       });
+
       expect(
         await page.evaluate(() => Reflect.get(globalThis, "codecObservations")),
       ).toEqual(expectedCodec);

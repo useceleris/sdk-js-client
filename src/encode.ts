@@ -16,7 +16,7 @@ export function encodeClientCommand(command: ClientCommand): Uint8Array {
   }
 
   return new CommandEncoder().encode(parsedCommand.data);
-}
+} // end function encodeClientCommand
 
 class CommandEncoder {
   private readonly parts: Uint8Array[] = [];
@@ -44,7 +44,7 @@ class CommandEncoder {
     }
 
     return this.assembleCommand();
-  }
+  } // end method encode
 
   private writePublishCommand(
     command: Extract<ValidatedClientCommand, { command: "PUB" }>,
@@ -58,7 +58,7 @@ class CommandEncoder {
     }
 
     this.appendBulk(command.payload);
-  }
+  } // end method writePublishCommand
 
   private writePresenceListCommand(
     command: Extract<ValidatedClientCommand, { command: "PRES_LIST" }>,
@@ -67,7 +67,7 @@ class CommandEncoder {
     this.appendBulk(command.segmentId);
     this.appendText(`;${command.page}\n;${command.perPage}\n`);
     this.appendBulk(command.requestId);
-  }
+  } // end method writePresenceListCommand
 
   private writeSegmentCommand(
     command: Extract<
@@ -77,7 +77,7 @@ class CommandEncoder {
   ): void {
     this.appendText(`@${command.command}\n`);
     this.appendBulk(command.segmentId);
-  }
+  } // end method writeSegmentCommand
 
   private append(bytes: Uint8Array): void {
     this.byteLength += bytes.byteLength;
@@ -88,7 +88,7 @@ class CommandEncoder {
     }
 
     this.parts.push(bytes);
-  }
+  } // end method append
 
   private appendText(text: string): void {
     // UTF-8 cannot be shorter than the UTF-16 code-unit count.
@@ -99,7 +99,7 @@ class CommandEncoder {
     }
 
     this.append(TEXT_ENCODER.encode(text));
-  }
+  } // end method appendText
 
   private appendBulk(value: string | Uint8Array): void {
     if (value.length > MAXIMUM_COMMAND_BYTES) {
@@ -113,7 +113,7 @@ class CommandEncoder {
     this.appendText(`$${bytes.byteLength}\n`);
     this.append(bytes);
     this.appendText("\n");
-  }
+  } // end method appendBulk
 
   private assembleCommand(): Uint8Array {
     const encodedCommand = new Uint8Array(this.byteLength);
@@ -125,5 +125,5 @@ class CommandEncoder {
     }
 
     return encodedCommand;
-  }
-}
+  } // end method assembleCommand
+} // end class CommandEncoder

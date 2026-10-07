@@ -38,10 +38,11 @@ export function validateBaseUrl(
     );
   }
 
-  if (!(
+  const permittedScheme =
     url.protocol === "wss:" ||
-    (url.protocol === "ws:" && allowInsecureLoopback && loopback)
-  )) {
+    (url.protocol === "ws:" && allowInsecureLoopback && loopback);
+
+  if (!permittedScheme) {
     throw new ConfigurationError(
       "Invalid connection URL. baseUrl must use wss://, or ws:// for a loopback host when allowInsecureLoopback is true.",
     );

@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { utf8 } from "../fixtures/codec-vectors";
-import { createTestChannel, flushMicrotasks } from "../helpers/channel";
+import {
+  createTestChannel,
+  flushMicrotasks,
+  messageFrame,
+} from "../helpers/channel";
 import { sockets, useTestWebSockets } from "../helpers/websocket";
 
 useTestWebSockets();
@@ -13,7 +17,7 @@ async function establish(setup = createTestChannel()) {
   await pending;
 
   return setup;
-}
+} // end function establish
 
 async function reconnect(): Promise<void> {
   sockets.at(-1)!.disconnect();
@@ -21,24 +25,13 @@ async function reconnect(): Promise<void> {
   await flushMicrotasks();
   sockets.at(-1)!.open();
   await flushMicrotasks();
-}
-
-function messageFrame(
-  segmentId: string,
-  messageId: string,
-  body: string,
-): ArrayBufferLike {
-  return utf8(
-    `@MSG\n$4\nuser\n$${utf8(segmentId).length}\n${segmentId}\n` +
-      `$${utf8(messageId).length}\n${messageId}\n:1\n$${utf8(body).length}\n${body}\n`,
-  ).buffer;
-}
+} // end function reconnect
 
 function framesOn(socket: (typeof sockets)[number]): string[] {
   return socket.send.mock.calls.map(([bytes]) =>
     new TextDecoder().decode(bytes as Uint8Array),
   );
-}
+} // end function framesOn
 
 describe("recovery restoration", () => {
   it("restores current intent in messages-then-presence registration order", async () => {
@@ -83,6 +76,7 @@ describe("recovery restoration", () => {
         `state:${state} frames:${sockets.at(-1)!.send.mock.calls.length}`,
       );
     });
+
     setup.channel.events().onRecovery((event) => {
       log.push(`recovery:${event.retryIndex}`);
     });
@@ -144,9 +138,11 @@ describe("recovery restoration", () => {
 
   it("restores more than 64 subscriptions on reconnect as the writer drains", async () => {
     const setup = await establish();
+
     for (let index = 0; index < 65; index += 1) {
       setup.channel.segment(`segment-${index}`).subscribe();
     }
+
     const errors: unknown[] = [];
     setup.channel.events().onError((error) => errors.push(error));
 

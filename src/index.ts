@@ -1,4 +1,5 @@
 export { createClient, Client, type ClientOptions } from "./client";
+
 export {
   Channel,
   type ChannelError,
@@ -16,6 +17,7 @@ export {
 export type { PresenceConnection } from "./messages";
 
 export { Segment } from "./segment";
+
 export {
   textPayload,
   jsonPayload,

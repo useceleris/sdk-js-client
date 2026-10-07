@@ -112,10 +112,21 @@ await lobby.publish({ payload: textPayload("hello lobby") });
 const lobbyMembership = lobby.subscribe();
 lobbyMembership.cancel();
 
+// All messages from all segments of this connection. This includes the
+// segments that the connection joins when it publishes, also when they have
+// no segment listener. The segment listeners get each message first.
+// removeChannelListener() removes only this listener.
+const removeChannelListener = channel
+  .events()
+  .onMessage((payload, metadata) =>
+    console.log(metadata.segmentId, readText(payload)),
+  );
+
 // Tear down: dispose listeners, cancel the interest. When the LAST interest
 // for a non-default segment on this channel is cancelled, UNSUB is sent.
 // The default segment is never remote-unsubscribed (the server refuses).
 stopChat();
+removeChannelListener();
 membership.cancel(); // idempotent
 ```
 
@@ -127,7 +138,7 @@ try {
 } catch (error) {
   if (error instanceof ConnectionError) {
     if (error.code === "NotConnected") {
-      /* offline: nothing was queued */
+      /* idle, connecting, failed or closed: nothing was queued */
     }
     if (error.code === "Backpressure") {
       /* writer full: slow down */
@@ -146,9 +157,9 @@ A permission-denied publish is different: it **resolves locally**, then the serv
 ```ts
 const chat = channel.segment("chat");
 
-// Presence interest. Server-side this ALSO joins the segment for messages;
-// cancelling presence does not leave it. Presence is a facet of a joined
-// segment, not an independent subscription.
+// Presence interest. A presence subscription is not a membership. It gives
+// no messages, and the server does not show this connection in the presence
+// of the segment because of it. To receive messages, also subscribe.
 const watching = chat.subscribePresence();
 
 // The default segment is the one place presence differs from messages:
@@ -190,7 +201,7 @@ stopPresence();
 stopNotices();
 ```
 
-Two things to know before building on the event stream. It is **node-local**: the server fans notifications out only to watchers connected to the same node, while `presenceList()` aggregates across the cluster — so in a multi-node deployment a watcher will not see a joiner on another node, and reconciling events against a snapshot drifts. And suppression is per connection, not per token: your own other tabs appear as joins and leaves.
+Presence events go to watchers on all server nodes of the channel, and `presenceList()` also includes all server nodes. Suppression is per connection, not per token: your own other tabs appear as joins and leaves.
 
 ## Multiple connections
 
@@ -349,4 +360,4 @@ void serialized;
 
 ## What this API will never do
 
-No offline queue, no automatic resend of publishes, no server receipts or acks (the protocol has none — acks and refusals are untagged prose), no durable history, no global ordering, no signing in the browser. Presence join and leave _are_ typed, because the wire frame carrying them is.
+No durable offline queue (a publish waits only while the channel reconnects), no automatic resend of a publish the socket was given (except after a rate limit), no server receipts or acks (the protocol has none — acks and refusals are untagged prose), no durable history, no global ordering, no signing in the browser. Presence join and leave _are_ typed, because the wire frame carrying them is.

@@ -12,6 +12,7 @@ it.each(["\n", "\r\n"])(
         ),
       ),
     ).toHaveProperty("timestamp", 1n);
+
     expect(
       decodeServerMessage(
         utf8(
@@ -57,9 +58,11 @@ it.each([
 it("copies binary payloads containing newline/marker bytes", () => {
   const payload = new Uint8Array(65536);
   const pattern = utf8("\n\r@$*:+-");
+
   for (let index = 0; index < payload.length; index += 1) {
     payload[index] = pattern[index % pattern.length]!;
   }
+
   const header = utf8("@SERVER_MSG\n:1\n$65536\n");
   const bytes = new Uint8Array(header.length + payload.length + 1);
   bytes.set(header);

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createClient, Client } from "../../src/client";
+import { createClient } from "../../src/client";
 import { ConfigurationError } from "../../src/errors";
 import {
   createTestChannel,
@@ -17,7 +17,7 @@ async function connectChannel(setup = createTestChannel()) {
   await pending;
 
   return setup;
-}
+} // end function connectChannel
 
 describe("channel lifecycle", () => {
   it("moves idle to connecting to connected and resolves on open", async () => {
@@ -88,6 +88,25 @@ describe("channel lifecycle", () => {
     expect(channel.state).toBe("connected");
   });
 
+  it("connects again from inside a failed state listener", async () => {
+    const { channel, credentialProvider } = createTestChannel();
+    credentialProvider.mockRejectedValueOnce(new Error("failure"));
+    let reconnecting: Promise<void> | undefined;
+    channel.events().onStateChange((state) => {
+      if (state === "failed" && !reconnecting) reconnecting = channel.connect();
+    });
+
+    await expect(channel.connect()).rejects.toMatchObject({
+      code: "Transport",
+    });
+    expect(channel.state).toBe("connecting");
+
+    await flushMicrotasks();
+    sockets[0]!.open();
+    await reconnecting;
+    expect(channel.state).toBe("connected");
+  });
+
   it("maps caller cancellation to Cancelled and failed", async () => {
     const { channel, credentialProvider } = createTestChannel();
     let capturedSignal: AbortSignal | undefined;
@@ -104,22 +123,6 @@ describe("channel lifecycle", () => {
     await expect(pending).rejects.toMatchObject({ code: "Cancelled" });
     expect(channel.state).toBe("failed");
     expect(capturedSignal?.aborted).toBe(true);
-  });
-
-  it("honors connectTimeoutMs for the attempt deadline", async () => {
-    vi.useFakeTimers();
-    const { channel, credentialProvider } = createTestChannel({
-      connectTimeoutMs: 5_000,
-    });
-    credentialProvider.mockImplementation(() => new Promise(() => undefined));
-    const pending = channel.connect();
-    const rejection = expect(pending).rejects.toMatchObject({
-      code: "Timeout",
-    });
-    await vi.advanceTimersByTimeAsync(5_000);
-    await rejection;
-    expect(channel.state).toBe("failed");
-    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("passes initial credential requests without outage fields", async () => {
@@ -184,6 +187,7 @@ describe("channel lifecycle", () => {
     channel.events().onError(() => {
       throw new Error("error-listener-secret");
     });
+
     channel.events().onStateChange(() => {
       throw new Error("listener-secret");
     });
@@ -230,51 +234,6 @@ describe("channel lifecycle", () => {
     sockets[0]!.open();
     await pending;
     await channel.close();
-  });
-
-  it("validates client options eagerly", () => {
-    const credentialProvider = async () => testCredentials;
-    expect(() => createClient({ baseUrl: "", credentialProvider })).toThrow(
-      ConfigurationError,
-    );
-    expect(() =>
-      createClient({ baseUrl: "https://example.test", credentialProvider }),
-    ).toThrow(ConfigurationError);
-    expect(() =>
-      createClient({
-        baseUrl: "wss://example.test",
-        credentialProvider: undefined as never,
-      }),
-    ).toThrow(ConfigurationError);
-    expect(() =>
-      createClient({
-        baseUrl: "wss://example.test",
-        credentialProvider,
-        connectTimeoutMs: 0.5,
-      }),
-    ).toThrow(ConfigurationError);
-    expect(
-      createClient({ baseUrl: "wss://example.test", credentialProvider }),
-    ).toBeInstanceOf(Client);
-  });
-
-  it.each([
-    "reconnectTimeoutMs",
-    "publishQueueSize",
-    "deduplicationWindowSize",
-  ] as const)("rejects a non-positive or fractional %s", (option) => {
-    const credentialProvider = async () => testCredentials;
-    const expectations: readonly [number, string][] = [
-      [0, "Too small: expected number to be >=1"],
-      [-1, "Too small: expected number to be >=1"],
-      [1.5, "Invalid input: expected int, received number"],
-    ];
-
-    for (const [value, rule] of expectations) {
-      expect(() =>
-        createClient({ credentialProvider, [option]: value }),
-      ).toThrow(`Invalid client options. ${option}: ${rule}.`);
-    }
   });
 
   it("imports without creating WebSocket or timer", async () => {

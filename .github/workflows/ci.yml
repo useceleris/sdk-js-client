@@ -40,5 +40,5 @@ jobs:
       # Windows runners ship Edge; branded coverage is PORT-01 evidence.
       - if: runner.os == 'Windows'
         run: echo "CELERIS_BROWSER_CHANNELS=msedge" >> $env:GITHUB_ENV
-      # Build, both typechecks, formatting and the suites.
+      # Build, both typechecks, lint, formatting and the suites.
       - run: npm run check

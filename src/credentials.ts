@@ -21,13 +21,15 @@ const credentialsSchema = z
 
 export function getSafeParsedCredentials(credentials: unknown): Credentials {
   const parsed = credentialsSchema.safeParse(credentials);
-  if (!parsed.success)
+
+  if (!parsed.success) {
     throw new ConfigurationError(
       describeParseError("credentials", parsed.error),
     );
+  }
 
   return parsed.data;
-} //end function getSafeParsedCredentials
+} // end function getSafeParsedCredentials
 
 const replayLookbackMsSchema = z.int().min(0).max(REPLAY_LOOKBACK_CAP_MS);
 
@@ -68,10 +70,12 @@ export function getSafeParsedConnectionConfiguration(
   configuration: ConnectionConfiguration,
 ): ParsedConnectionConfiguration {
   const parsed = connectionConfigurationSchema.safeParse(configuration);
-  if (!parsed.success)
+
+  if (!parsed.success) {
     throw new ConfigurationError(
       describeParseError("connection configuration", parsed.error),
     );
+  }
 
   return parsed.data;
 } // end function getSafeParsedConnectionConfiguration

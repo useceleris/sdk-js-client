@@ -87,13 +87,21 @@ export const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 
 export const DEFAULT_PRESENCE_QUERY_TIMEOUT_MS = 10_000;
 
+// The longest connect, reconnect or presence query timeout a client accepts
+// (CONFIG-01). It also keeps every timer below the 2^31 − 1 ms that
+// setTimeout can count; a longer delay fires at once.
+export const MAXIMUM_TIMEOUT_MS = 15 * 60 * 1000;
+
 export const DEFAULT_SEGMENT_ID = "default";
 
 // The command a presence query error names as its sub type (QUERY-01).
 export const PRESENCE_LIST_COMMAND = "PRES_LIST";
 
-// Recovery.
-export const MAXIMUM_RETRIES = 10;
+// Recovery (CONFIG-01). Failed reconnect attempts allowed per budget before
+// the channel fails: the default, and the most maximumReconnectAttempts accepts.
+export const DEFAULT_MAXIMUM_RECONNECT_ATTEMPTS = 10;
+
+export const MAXIMUM_RECONNECT_ATTEMPTS_CEILING = 100;
 
 export const RETRY_BUDGET_RESET_MS = 60_000;
 

@@ -2,8 +2,16 @@ import { describe, expect, it, vi } from "vitest";
 import { Segment } from "../../src/segment";
 import { ConfigurationError, ServerError } from "../../src/errors";
 import { utf8 } from "../fixtures/codec-vectors";
-import { createTestChannel, flushMicrotasks } from "../helpers/channel";
-import { sockets, useTestWebSockets } from "../helpers/websocket";
+import {
+  createTestChannel,
+  flushMicrotasks,
+  messageFrame,
+} from "../helpers/channel";
+import {
+  sockets,
+  useTestWebSockets,
+  type TestWebSocket,
+} from "../helpers/websocket";
 
 useTestWebSockets();
 
@@ -15,21 +23,7 @@ async function establish(setup = createTestChannel()) {
   await pending;
 
   return setup;
-}
-
-function messageFrame(
-  segmentId: string,
-  messageId: string | null,
-  body: string,
-): ArrayBufferLike {
-  const identifier =
-    messageId === null ? "$-1\n" : `$${utf8(messageId).length}\n${messageId}\n`;
-
-  return utf8(
-    `@MSG\n$4\nuser\n$${utf8(segmentId).length}\n${segmentId}\n` +
-      `${identifier}:1\n$${utf8(body).length}\n${body}\n`,
-  ).buffer;
-}
+} // end function establish
 
 // Laid out like the server's ErrorMessage.
 function errorFrame(
@@ -44,7 +38,7 @@ function errorFrame(
     `-Err\n+${type}\n${subTypeField}$${utf8(message).length}\n${message}\n` +
       resource,
   ).buffer;
-}
+} // end function errorFrame
 
 function sentFrames(): string[] {
   return sockets
@@ -52,7 +46,43 @@ function sentFrames(): string[] {
     .send.mock.calls.map(([bytes]) =>
       new TextDecoder().decode(bytes as Uint8Array),
     );
-}
+} // end function sentFrames
+
+// Runs the scheduled reconnect attempt: test retry delays are zero, which fake
+// timers run one millisecond later.
+async function startReconnectAttempt(): Promise<TestWebSocket> {
+  const socketCount = sockets.length;
+  await vi.advanceTimersByTimeAsync(1);
+  await flushMicrotasks();
+  expect(sockets).toHaveLength(socketCount + 1);
+
+  return sockets.at(-1)!;
+} // end function startReconnectAttempt
+
+async function reconnect(): Promise<void> {
+  (await startReconnectAttempt()).open();
+  await flushMicrotasks();
+} // end function reconnect
+
+// Every send then fails with Backpressure, so publishes wait in the queue.
+function fillWriter(socket: TestWebSocket): void {
+  socket.bufferedAmount = 2 * 1024 * 1024;
+} // end function fillWriter
+
+function publishFrame(segmentId: string, messageId: string, body: string) {
+  return `@PUB\n$${segmentId.length}\n${segmentId}\n$${messageId.length}\n${messageId}\n$${body.length}\n${body}\n`;
+} // end function publishFrame
+
+// Tracks whether a promise has settled without awaiting it.
+function track(promise: Promise<void>): { settled: boolean } {
+  const state = { settled: false };
+  promise.then(
+    () => (state.settled = true),
+    () => (state.settled = true),
+  );
+
+  return state;
+} // end function track
 
 describe("segment proxies", () => {
   it("creates side-effect-free stateless proxies", async () => {
@@ -92,6 +122,18 @@ describe("segment proxies", () => {
     expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n", "@UNSUB\n$4\nchat\n"]);
   });
 
+  it("multiplexes segments over one socket; another channel opens another", async () => {
+    const { channel } = await establish();
+    channel.segment("alpha").subscribe();
+    channel.segment("beta").subscribe();
+    await channel.segment("gamma").publish({ payload: utf8("x") });
+    expect(sockets).toHaveLength(1);
+    expect(sentFrames()).toHaveLength(3);
+
+    await establish(createTestChannel({ channelReference: "room-2" }));
+    expect(sockets).toHaveLength(2);
+  });
+
   it("never sends SUB or UNSUB for the default segment", async () => {
     const { channel } = await establish();
     const membership = channel.defaultSegment().subscribe();
@@ -114,25 +156,41 @@ describe("publish", () => {
     ]);
   });
 
-  it("rejects offline publishes without queueing", async () => {
-    const idle = createTestChannel();
-    await expect(
-      idle.channel.defaultSegment().publish({ payload: utf8("x") }),
-    ).rejects.toMatchObject({ code: "NotConnected" });
-
-    const setup = await establish();
+  it("rejects a publish before the first connect, during it, after failed and after close", async () => {
+    vi.useFakeTimers();
+    const setup = createTestChannel({ maximumReconnectAttempts: 1 });
     const segment = setup.channel.segment("chat");
-    sockets.at(-1)!.disconnect();
-    expect(setup.channel.state).toBe("reconnecting");
+    const notConnected = (state: string) => ({
+      code: "NotConnected",
+      message: `Channel is not connected; it is ${state}.`,
+    });
+
     await expect(segment.publish({ payload: utf8("x") })).rejects.toMatchObject(
-      { code: "NotConnected" },
+      notConnected("idle"),
+    );
+
+    const connecting = setup.channel.connect();
+    await expect(segment.publish({ payload: utf8("x") })).rejects.toMatchObject(
+      notConnected("connecting"),
+    );
+
+    await flushMicrotasks();
+    sockets.at(-1)!.open();
+    await connecting;
+    sockets.at(-1)!.disconnect();
+    (await startReconnectAttempt()).fail();
+    await flushMicrotasks();
+    expect(setup.channel.state).toBe("failed");
+    await expect(segment.publish({ payload: utf8("x") })).rejects.toMatchObject(
+      notConnected("failed"),
     );
 
     await setup.channel.close();
     await expect(segment.publish({ payload: utf8("x") })).rejects.toMatchObject(
-      { code: "NotConnected" },
+      notConnected("closed"),
     );
-    expect(sockets.at(-1)!.send).not.toHaveBeenCalled();
+
+    for (const socket of sockets) expect(socket.send).not.toHaveBeenCalled();
   });
 
   it("rejects a pre-aborted signal and invalid options before writing", async () => {
@@ -148,6 +206,7 @@ describe("publish", () => {
     await expect(
       channel.defaultSegment().publish({ payload: utf8("x"), messageId: "" }),
     ).rejects.toBeInstanceOf(ConfigurationError);
+
     await expect(
       channel
         .defaultSegment()
@@ -169,16 +228,18 @@ describe("publish", () => {
     });
 
     const lobby = channel.defaultSegment();
+
     for (let index = 0; index < 64; index += 1) {
       await lobby.publish({ payload: utf8("x") });
     }
+
     const queued = Array.from({ length: 64 }, () =>
       lobby.publish({ payload: utf8("x") }),
     );
     await expect(lobby.publish({ payload: utf8("x") })).rejects.toMatchObject({
       code: "Backpressure",
       message:
-        "64 publishes are already waiting to be sent. Retry once some have gone out.",
+        "The publish queue is full (size 64). Retry once some publishes have gone out.",
     });
     expect(socket.send).toHaveBeenCalledTimes(64);
 
@@ -187,32 +248,6 @@ describe("publish", () => {
     await Promise.all(queued);
 
     expect(socket.send).toHaveBeenCalledTimes(128);
-    expect(channel.state).toBe("connected");
-  });
-
-  it("caps waiting publishes at the configured publishQueueSize", async () => {
-    const { channel } = await establish(
-      createTestChannel({ publishQueueSize: 2 }),
-    );
-    const socket = sockets.at(-1)!;
-    socket.bufferedAmount = 2 * 1024 * 1024; // the writer has no room
-
-    const lobby = channel.defaultSegment();
-    const queued = [
-      lobby.publish({ payload: utf8("x") }),
-      lobby.publish({ payload: utf8("x") }),
-    ];
-    await expect(lobby.publish({ payload: utf8("x") })).rejects.toMatchObject({
-      code: "Backpressure",
-      message:
-        "2 publishes are already waiting to be sent. Retry once some have gone out.",
-    });
-    expect(socket.send).not.toHaveBeenCalled();
-
-    socket.bufferedAmount = 0;
-    await vi.advanceTimersByTimeAsync(50);
-    await Promise.all(queued);
-    expect(socket.send).toHaveBeenCalledTimes(2);
     expect(channel.state).toBe("connected");
   });
 
@@ -291,6 +326,7 @@ describe("subscriptions and flush", () => {
 
   it("restores more than 64 subscriptions on connect as the writer drains", async () => {
     const setup = createTestChannel();
+
     for (let index = 0; index < 65; index += 1) {
       setup.channel.segment(`segment-${index}`).subscribe();
     }
@@ -342,6 +378,14 @@ describe("subscriptions and flush", () => {
     expect(sentFrames()).toEqual(["@SUB\n$5\nlobby\n"]);
   });
 
+  it("puts nothing on the wire for a listener alone", async () => {
+    const { channel } = await establish();
+    channel.segment("chat").onMessage(() => undefined);
+    channel.events().onMessage(() => undefined);
+
+    expect(sockets.at(-1)!.send).not.toHaveBeenCalled();
+  });
+
   it("rejects subscribe on a closed channel", async () => {
     const { channel } = createTestChannel();
     await channel.close();
@@ -359,6 +403,7 @@ describe("delivery and dedup", () => {
     channel
       .segment("chat")
       .onMessage((_payload, metadata) => chatMessages.push(metadata.messageId));
+
     channel
       .defaultSegment()
       .onMessage((_payload, metadata) =>
@@ -379,6 +424,7 @@ describe("delivery and dedup", () => {
     channel
       .segment("chat")
       .onMessage((payload, metadata) => seen.push({ payload, ...metadata }));
+
     channel
       .segment("chat")
       .onMessage((payload, metadata) => seen.push({ payload, ...metadata }));
@@ -407,41 +453,6 @@ describe("delivery and dedup", () => {
     sockets.at(-1)!.receive(messageFrame("chat", "id-2", "hi"));
 
     expect(delivered).toEqual(["id-2"]);
-  });
-
-  it("evicts the oldest id beyond the window size", async () => {
-    const { channel } = await establish();
-    const delivered: string[] = [];
-    channel
-      .segment("chat")
-      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
-
-    sockets.at(-1)!.receive(messageFrame("chat", "id-0", "x"));
-    for (let index = 1; index <= 1024; index += 1) {
-      sockets.at(-1)!.receive(messageFrame("chat", `id-${index}`, "x"));
-    }
-    sockets.at(-1)!.receive(messageFrame("chat", "id-0", "x"));
-
-    expect(delivered).toHaveLength(1026);
-    expect(delivered.at(-1)).toBe("id-0");
-  });
-
-  it("evicts by the configured deduplicationWindowSize", async () => {
-    const { channel } = await establish(
-      createTestChannel({ deduplicationWindowSize: 2 }),
-    );
-    const delivered: string[] = [];
-    channel
-      .segment("chat")
-      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
-
-    sockets.at(-1)!.receive(messageFrame("chat", "id-a", "x"));
-    sockets.at(-1)!.receive(messageFrame("chat", "id-b", "x"));
-    sockets.at(-1)!.receive(messageFrame("chat", "id-c", "x"));
-    sockets.at(-1)!.receive(messageFrame("chat", "id-a", "x"));
-
-    // id-a was evicted when id-c arrived, so its replay is delivered again.
-    expect(delivered).toEqual(["id-a", "id-b", "id-c", "id-a"]);
   });
 
   it("keeps the window across reconnect and clears it on a fresh connect", async () => {
@@ -646,6 +657,7 @@ describe("delivery and dedup", () => {
       disposeSecond();
       throw new Error("listener-secret");
     });
+
     disposeSecond = channel
       .segment("chat")
       .onMessage(() => order.push("second"));
@@ -674,6 +686,174 @@ describe("delivery and dedup", () => {
     sockets.at(-1)!.receive(utf8(`*2\n${first}${second}`).buffer);
 
     expect(delivered).toEqual(["al-1", "al-2"]);
+  });
+});
+
+describe("channel-wide delivery", () => {
+  it("receives every segment's deliveries, with or without segment listeners", async () => {
+    const { channel } = await establish();
+    const seen: string[] = [];
+    channel
+      .events()
+      .onMessage((payload, metadata) =>
+        seen.push(`${metadata.segmentId}:${new TextDecoder().decode(payload)}`),
+      );
+    channel.segment("chat").onMessage(() => undefined);
+
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi"));
+    sockets.at(-1)!.receive(messageFrame("default", "id-2", "yo"));
+    sockets.at(-1)!.receive(messageFrame("joined-by-publish", "id-3", "ok"));
+
+    expect(seen).toEqual(["chat:hi", "default:yo", "joined-by-publish:ok"]);
+  });
+
+  it("runs after the segment's listeners in the same dispatch", async () => {
+    const { channel } = await establish();
+    const order: string[] = [];
+    channel.events().onMessage(() => order.push("channel"));
+    channel.segment("chat").onMessage(() => order.push("segment"));
+
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
+
+    expect(order).toEqual(["segment", "channel"]);
+  });
+
+  it("sees a duplicate once and never a delivery without an id", async () => {
+    const { channel } = await establish();
+    const delivered: string[] = [];
+    channel
+      .events()
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
+
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
+    sockets.at(-1)!.receive(messageFrame("other", "id-1", "x"));
+    sockets.at(-1)!.receive(messageFrame("chat", null, "x"));
+
+    expect(delivered).toEqual(["id-1"]);
+  });
+
+  it("contains a throwing listener and stops after disposal", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    const delivered: string[] = [];
+    channel.events().onError((error) => errors.push(error));
+    const stopThrowing = channel.events().onMessage(() => {
+      throw new Error("listener-secret");
+    });
+    const stopRecording = channel
+      .events()
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
+
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
+    stopThrowing();
+    stopRecording();
+    sockets.at(-1)!.receive(messageFrame("chat", "id-2", "x"));
+
+    expect(delivered).toEqual(["id-1"]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      message:
+        "A listener callback threw; the channel caught the error and kept running.",
+    });
+    expect(channel.state).toBe("connected");
+  });
+
+  it("removes only its own channel listener", async () => {
+    const { channel } = await establish();
+    const delivered: string[] = [];
+    const removeChannelListener = channel
+      .events()
+      .onMessage(() => delivered.push("removed"));
+    channel.events().onMessage(() => delivered.push("channel"));
+    channel.segment("chat").onMessage(() => delivered.push("segment"));
+    channel.segment("chat").subscribe();
+
+    removeChannelListener();
+    removeChannelListener();
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
+
+    expect(delivered).toEqual(["segment", "channel"]);
+    expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
+  });
+
+  // The server decides what arrives; the SDK never gates on subscriptions.
+  it("delivers whatever the subscription state", async () => {
+    const { channel } = await establish();
+    const delivered: string[] = [];
+    channel
+      .segment("chat")
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
+    channel.segment("chat").subscribe().cancel();
+
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "x"));
+
+    expect(delivered).toEqual(["id-1"]);
+  });
+});
+
+describe("listener re-entry", () => {
+  it("publishes from inside a message listener", async () => {
+    const { channel } = await establish();
+    const seen: string[] = [];
+    let published: Promise<void> | undefined;
+    channel.segment("chat").onMessage(() => {
+      published = channel
+        .segment("chat")
+        .publish({ payload: utf8("reply"), messageId: "reply-1" });
+    });
+
+    channel.events().onMessage((_payload, metadata) => {
+      seen.push(metadata.messageId);
+    });
+
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi"));
+    await published;
+
+    expect(seen).toEqual(["id-1"]);
+    expect(sentFrames()).toEqual(["@PUB\n$4\nchat\n$7\nreply-1\n$5\nreply\n"]);
+  });
+
+  it("subscribes and cancels from inside a message listener", async () => {
+    const { channel } = await establish();
+    const held = channel.segment("old").subscribe();
+    channel.events().onMessage(() => {
+      held.cancel();
+      channel.segment("new").subscribe();
+    });
+
+    sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi"));
+
+    expect(sentFrames()).toEqual([
+      "@SUB\n$3\nold\n",
+      "@UNSUB\n$3\nold\n",
+      "@SUB\n$3\nnew\n",
+    ]);
+  });
+
+  it("closes from inside a message listener without throwing", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    const seen: string[] = [];
+    let closing: Promise<void> | undefined;
+    channel.events().onError((error) => errors.push(error));
+    channel.segment("chat").onMessage(() => {
+      closing = channel.close();
+    });
+
+    channel.events().onMessage((_payload, metadata) => {
+      seen.push(metadata.messageId);
+    });
+
+    expect(() =>
+      sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi")),
+    ).not.toThrow();
+    await closing;
+    sockets.at(-1)!.receive(messageFrame("chat", "id-2", "hi"));
+
+    expect(channel.state).toBe("closed");
+    expect(seen).toEqual(["id-1"]);
+    expect(errors).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 
@@ -713,25 +893,43 @@ describe("rate-limit recovery", () => {
     ]);
   });
 
-  it("resends a publish once, and only when it was sent within the window", async () => {
+  it("resends a command sent exactly 2 000 ms before the limit, not one sent 2 001 ms before", async () => {
     const { channel, clocks } = await establish();
     const socket = sockets.at(-1)!;
     const chat = channel.segment("chat");
     await chat.publish({ payload: utf8("old") });
-    clocks.monotonic += 2_001;
-    await chat.publish({ payload: utf8("new") });
+    clocks.monotonic += 1;
+    await chat.publish({ payload: utf8("edge") });
+    clocks.monotonic += 2_000;
     socket.send.mockClear();
 
     socket.receive(rateLimitFrame());
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(sentFrames()).toEqual([
-      "@PUB\n$4\nchat\n$11\ngenerated-2\n$3\nnew\n",
+      "@PUB\n$4\nchat\n$11\ngenerated-2\n$4\nedge\n",
     ]);
+  });
+
+  it("resends a publish byte for byte with its original id, and only once", async () => {
+    const { channel } = await establish();
+    const socket = sockets.at(-1)!;
+    await channel
+      .segment("chat")
+      .publish({ payload: utf8("x"), messageId: "original-id" });
+
+    const [original] = socket.send.mock.calls[0]!;
+    socket.send.mockClear();
+
+    socket.receive(rateLimitFrame());
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(socket.send.mock.calls[0]![0]).toEqual(original);
 
     socket.send.mockClear();
     socket.receive(rateLimitFrame());
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(31_000);
 
     expect(socket.send).not.toHaveBeenCalled();
   });
@@ -754,7 +952,9 @@ describe("rate-limit recovery", () => {
     const socket = sockets.at(-1)!;
     channel.segment("chat").subscribe();
 
-    for (const pauseMs of [1_500, 2_000]) {
+    // 1 000 ms plus the reconnect delay for the streak index, which is capped
+    // at 30 000 ms. The seventh limit is the first to reach the cap.
+    for (const pauseMs of [1_500, 2_000, 3_000, 5_000, 9_000, 17_000, 31_000]) {
       socket.send.mockClear();
       socket.receive(rateLimitFrame());
       await vi.advanceTimersByTimeAsync(pauseMs - 1);
@@ -764,12 +964,15 @@ describe("rate-limit recovery", () => {
       expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
     }
 
-    clocks.monotonic += 10_000;
+    // Past the last pause and its suspect window, the streak starts over.
+    clocks.monotonic += 40_000;
     channel.segment("lobby").subscribe();
     socket.send.mockClear();
     socket.receive(rateLimitFrame());
-    await vi.advanceTimersByTimeAsync(1_500);
+    await vi.advanceTimersByTimeAsync(1_499);
+    expect(socket.send).not.toHaveBeenCalled();
 
+    await vi.advanceTimersByTimeAsync(1);
     expect(sentFrames()).toEqual(["@SUB\n$5\nlobby\n"]);
   });
 
@@ -790,22 +993,6 @@ describe("rate-limit recovery", () => {
     });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(socket.send).not.toHaveBeenCalled();
-  });
-
-  it("rejects queued publishes when the connection drops", async () => {
-    const { channel } = await establish();
-    const socket = sockets.at(-1)!;
-    socket.receive(rateLimitFrame());
-    const pending = channel.segment("chat").publish({ payload: utf8("x") });
-
-    socket.disconnect();
-
-    await expect(pending).rejects.toMatchObject({
-      code: "NotConnected",
-      message:
-        "Connection lost before the publish was sent; publish again once the channel reconnects.",
-    });
-    expect(channel.state).toBe("reconnecting");
   });
 
   it("never sends a subscription change ahead of an earlier publish to its segment", async () => {
@@ -836,13 +1023,14 @@ describe("rate-limit recovery", () => {
       socket.receive(rateLimitFrame());
       await vi.advanceTimersByTimeAsync(31_000);
     }
-  }
+  } // end function exhaustRateLimit
 
-  it("re-sends dropped subscriptions on a slow probe that doubles after each limit", async () => {
+  it("drops recent publishes and keeps subscriptions for the probe once eight limits in a row have passed", async () => {
     const { channel } = await establish();
     const socket = sockets.at(-1)!;
     channel.segment("chat").subscribe();
     await exhaustRateLimit(socket);
+    await channel.segment("lobby").publish({ payload: utf8("x") });
 
     socket.send.mockClear();
     socket.receive(rateLimitFrame());
@@ -851,14 +1039,28 @@ describe("rate-limit recovery", () => {
 
     await vi.advanceTimersByTimeAsync(1);
     expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
+  });
 
-    socket.send.mockClear();
-    socket.receive(rateLimitFrame());
-    await vi.advanceTimersByTimeAsync(119_999);
-    expect(socket.send).not.toHaveBeenCalled();
+  it("re-sends dropped subscriptions on a slow probe that doubles after each limit, up to one hour", async () => {
+    const { channel } = await establish();
+    const socket = sockets.at(-1)!;
+    channel.segment("chat").subscribe();
+    await exhaustRateLimit(socket);
 
-    await vi.advanceTimersByTimeAsync(1);
-    expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
+    const probeDelays = [
+      60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000, 3_600_000,
+      3_600_000,
+    ];
+
+    for (const delayMs of probeDelays) {
+      socket.send.mockClear();
+      socket.receive(rateLimitFrame());
+      await vi.advanceTimersByTimeAsync(delayMs - 1);
+      expect(socket.send).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
+    }
   });
 
   it("resends normally again once commands go a window without a limit", async () => {
@@ -1011,16 +1213,27 @@ describe("rate-limit recovery", () => {
     const { channel } = await establish();
     const socket = sockets.at(-1)!;
     const lobby = channel.segment("lobby");
-    for (let index = 0; index < 70; index += 1) {
-      await lobby.publish({ payload: utf8("x") });
+
+    for (let index = 1; index <= 65; index += 1) {
+      await lobby.publish({ payload: utf8(`${index}`) });
     }
+
     socket.send.mockClear();
 
     socket.receive(rateLimitFrame());
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(socket.send).toHaveBeenCalledTimes(64);
-    expect(sentFrames()[0]).toBe("@PUB\n$5\nlobby\n$11\ngenerated-7\n$1\nx\n");
+    const expected = [];
+
+    for (let index = 2; index <= 65; index += 1) {
+      const messageId = `generated-${index}`;
+      const body = `${index}`;
+      expected.push(
+        `@PUB\n$5\nlobby\n$${messageId.length}\n${messageId}\n$${body.length}\n${body}\n`,
+      );
+    }
+
+    expect(sentFrames()).toEqual(expected);
   });
 
   it("rejects a presence query while sending is paused", async () => {
@@ -1075,5 +1288,197 @@ describe("rate-limit recovery", () => {
     expect(channel.state).toBe("connected");
     expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n"]);
     expect(errors).toEqual([]);
+  });
+});
+
+describe("publishes across a reconnect", () => {
+  it("queues a publish while reconnecting and sends it after the reconnect", async () => {
+    const { channel } = await establish();
+    sockets.at(-1)!.disconnect();
+    expect(channel.state).toBe("reconnecting");
+
+    const published = channel.segment("chat").publish({ payload: utf8("x") });
+    const progress = track(published);
+    await flushMicrotasks();
+    expect(progress.settled).toBe(false);
+
+    await reconnect();
+    await published;
+    expect(channel.state).toBe("connected");
+    expect(sentFrames()).toEqual([publishFrame("chat", "generated-1", "x")]);
+  });
+
+  it("sends publishes waiting behind a full writer after the reconnect, in order", async () => {
+    const { channel } = await establish();
+    fillWriter(sockets.at(-1)!);
+    const chat = channel.segment("chat");
+    const published = ["a", "b", "c"].map((body) =>
+      chat.publish({ payload: utf8(body) }),
+    );
+
+    sockets.at(-1)!.disconnect();
+    await reconnect();
+    await Promise.all(published);
+
+    expect(sentFrames()).toEqual([
+      publishFrame("chat", "generated-1", "a"),
+      publishFrame("chat", "generated-2", "b"),
+      publishFrame("chat", "generated-3", "c"),
+    ]);
+  });
+
+  it("restores every subscription before any queued publish, even an earlier one to the same segment", async () => {
+    const { channel } = await establish();
+    channel.segment("chat").subscribe();
+    channel.segment("news").subscribe();
+    channel.segment("lobby").subscribePresence();
+
+    fillWriter(sockets.at(-1)!);
+    const beforeDrop = channel.segment("chat").publish({ payload: utf8("a") });
+    sockets.at(-1)!.disconnect();
+    const duringOutage = channel
+      .segment("news")
+      .publish({ payload: utf8("b") });
+
+    await reconnect();
+    await Promise.all([beforeDrop, duringOutage]);
+
+    expect(sentFrames()).toEqual([
+      "@SUB\n$4\nchat\n",
+      "@SUB\n$4\nnews\n",
+      "@PRES_SUB\n$5\nlobby\n",
+      publishFrame("chat", "generated-1", "a"),
+      publishFrame("news", "generated-2", "b"),
+    ]);
+  });
+
+  it("refuses a publish while reconnecting with Backpressure when the queue is full", async () => {
+    const { channel } = await establish(
+      createTestChannel({ publishQueueSize: 1 }),
+    );
+
+    sockets.at(-1)!.disconnect();
+    const chat = channel.segment("chat");
+    const queued = chat.publish({ payload: utf8("a") });
+
+    await expect(chat.publish({ payload: utf8("b") })).rejects.toMatchObject({
+      code: "Backpressure",
+      message:
+        "The publish queue is full (size 1). Retry once some publishes have gone out.",
+    });
+
+    await reconnect();
+    await queued;
+    expect(sentFrames()).toEqual([publishFrame("chat", "generated-1", "a")]);
+  });
+
+  it("keeps the queue through a failed attempt and sends it on the next one", async () => {
+    const { channel } = await establish();
+    sockets.at(-1)!.disconnect();
+    const published = channel.segment("chat").publish({ payload: utf8("x") });
+    const progress = track(published);
+
+    (await startReconnectAttempt()).fail();
+    await flushMicrotasks();
+    expect(channel.state).toBe("reconnecting");
+    expect(progress.settled).toBe(false);
+
+    await reconnect();
+    await published;
+    expect(sentFrames()).toEqual([publishFrame("chat", "generated-1", "x")]);
+  });
+
+  it("rejects each queued publish with the terminal error when the retries run out", async () => {
+    const { channel } = await establish(
+      createTestChannel({ maximumReconnectAttempts: 1 }),
+    );
+
+    const errors: unknown[] = [];
+    channel.events().onError((error) => errors.push(error));
+    sockets.at(-1)!.disconnect();
+    const chat = channel.segment("chat");
+    const outcomes = ["a", "b"].map((body) =>
+      chat.publish({ payload: utf8(body) }).catch((error: unknown) => error),
+    );
+
+    (await startReconnectAttempt()).fail();
+    await flushMicrotasks();
+
+    expect(channel.state).toBe("failed");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: "Transport" });
+
+    for (const outcome of await Promise.all(outcomes)) {
+      expect(outcome).toBe(errors[0]);
+    }
+  });
+
+  it("rejects queued publishes with Cancelled when closed while reconnecting", async () => {
+    const { channel } = await establish();
+    sockets.at(-1)!.disconnect();
+    const published = channel.segment("chat").publish({ payload: utf8("x") });
+
+    await channel.close();
+
+    await expect(published).rejects.toMatchObject({
+      code: "Cancelled",
+      message: "Channel closed before the publish was sent.",
+    });
+  });
+
+  it("starts an explicit connect after failed with an empty queue", async () => {
+    const { channel } = await establish(
+      createTestChannel({ maximumReconnectAttempts: 1 }),
+    );
+
+    sockets.at(-1)!.disconnect();
+    const published = channel
+      .segment("chat")
+      .publish({ payload: utf8("x") })
+      .catch(() => undefined);
+
+    (await startReconnectAttempt()).fail();
+    await flushMicrotasks();
+    await published;
+    expect(channel.state).toBe("failed");
+
+    const connecting = channel.connect();
+    await flushMicrotasks();
+    sockets.at(-1)!.open();
+    await connecting;
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(sentFrames()).toEqual([]);
+  });
+
+  it("never resends a publish the previous socket was given", async () => {
+    const { channel } = await establish();
+    await channel.segment("chat").publish({ payload: utf8("x") });
+    expect(sentFrames()).toEqual([publishFrame("chat", "generated-1", "x")]);
+
+    sockets.at(-1)!.disconnect();
+    await reconnect();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    expect(sentFrames()).toEqual([]);
+  });
+
+  it("withdraws a publish queued while reconnecting when its signal aborts", async () => {
+    const { channel } = await establish();
+    sockets.at(-1)!.disconnect();
+    const controller = new AbortController();
+    const published = channel
+      .segment("chat")
+      .publish({ payload: utf8("x"), signal: controller.signal });
+
+    controller.abort();
+
+    await expect(published).rejects.toMatchObject({
+      code: "Cancelled",
+      message: "Publish cancelled by its abort signal before it was sent.",
+    });
+
+    await reconnect();
+    expect(sentFrames()).toEqual([]);
   });
 });

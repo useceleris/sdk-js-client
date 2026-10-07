@@ -59,6 +59,7 @@ describe("json payloads", () => {
     circular.self = circular;
 
     let error: unknown;
+
     try {
       jsonPayload(circular);
     } catch (caught) {

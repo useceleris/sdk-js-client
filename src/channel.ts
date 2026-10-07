@@ -23,13 +23,10 @@ import {
   CLOSE_BUDGET_MS,
   DEFAULT_SEGMENT_ID,
   LENIENT_TEXT_DECODER,
-  MAXIMUM_RETRIES,
   PRESENCE_LIST_COMMAND,
   RATE_LIMIT_ERROR_TYPE,
   RETRY_BUDGET_RESET_MS,
 } from "./constants";
-
-// Replaces malformed bytes rather than throwing: error delivery must not fail.
 
 export type ChannelError =
   ConfigurationError | ConnectionError | ProtocolError | ServerError;
@@ -97,6 +94,8 @@ export interface ChannelEventHandler {
   onRecovery(listener: (event: RecoveryEvent) => void): () => void;
   onNotice(listener: (notice: ServerNotice) => void): () => void;
   onError(listener: (error: ChannelError) => void): () => void;
+  // Every delivery from any segment, after that segment's listeners (MSG-02).
+  onMessage(listener: MessageListener): () => void;
 }
 
 export type ChannelInternals = {
@@ -108,6 +107,7 @@ export type ChannelInternals = {
   readonly presenceQueryTimeoutMs: number;
   readonly publishQueueSize: number;
   readonly deduplicationWindowSize: number;
+  readonly maximumReconnectAttempts: number;
   readonly credentialProvider: CredentialProvider;
   readonly clock: () => number;
   readonly wallClock: () => number;
@@ -184,6 +184,7 @@ export class Channel {
   private retriesUsed = 0;
   private outage:
     { disconnectedAt: number; startedMonotonic: number } | undefined;
+
   private connectedAtMonotonic = 0;
   private retryTimer: ReturnType<typeof setTimeout> | undefined;
   private closeBudgetTimer: ReturnType<typeof setTimeout> | undefined;
@@ -198,10 +199,12 @@ export class Channel {
     string,
     ListenerSet<Parameters<MessageListener>>
   >();
+
   private readonly presenceListeners = new Map<
     string,
     ListenerSet<[PresenceEvent]>
   >();
+
   private readonly messageInterests = new Map<string, number>();
   private readonly presenceInterests = new Map<string, number>();
   // Issues presence query request ids. Kept per channel rather than per
@@ -219,22 +222,31 @@ export class Channel {
   private readonly stateListeners = new ListenerSet<[ChannelState]>(() =>
     this.reportListenerFailure(),
   );
+
   private readonly recoveryListeners = new ListenerSet<[RecoveryEvent]>(() =>
     this.reportListenerFailure(),
   );
+
   // Error-listener exceptions are swallowed: reporting them would re-enter
   // error dispatch (emitError also guards against that re-entry).
   private readonly errorListeners = new ListenerSet<[ChannelError]>(
     () => undefined,
   );
+
   private readonly noticeListeners = new ListenerSet<[ServerNotice]>(() =>
     this.reportListenerFailure(),
   );
+
+  private readonly channelMessageListeners = new ListenerSet<
+    Parameters<MessageListener>
+  >(() => this.reportListenerFailure());
+
   private readonly handler: ChannelEventHandler = {
     onStateChange: (listener) => this.stateListeners.add(listener),
     onRecovery: (listener) => this.recoveryListeners.add(listener),
     onNotice: (listener) => this.noticeListeners.add(listener),
     onError: (listener) => this.errorListeners.add(listener),
+    onMessage: (listener) => this.channelMessageListeners.add(listener),
   };
 
   private readonly segmentDelegates: SegmentDelegates = {
@@ -276,10 +288,11 @@ export class Channel {
   segment(segmentId: string): Segment {
     const parsed = identifierSchema.safeParse(segmentId);
 
-    if (!parsed.success)
+    if (!parsed.success) {
       throw new ConfigurationError(
         describeParseError("segment ID", parsed.error),
       );
+    }
 
     return new Segment(segmentId, this.segmentDelegates);
   } // end method segment
@@ -445,13 +458,14 @@ export class Channel {
         );
       }
     } catch (error) {
-      // A failed attempt leaves nothing queued for the next socket.
-      this.resetCommandQueueOnConnectionLoss();
+      // Waiting publishes stay for the next attempt (QUEUE-01).
+      this.commandQueue.resetConnectionState();
       throw error;
     } finally {
       callerSignal?.removeEventListener("abort", forwardAbort);
-      if (this.attemptController === controller)
+      if (this.attemptController === controller) {
         this.attemptController = undefined;
+      }
     }
   } // end method establishConnection
 
@@ -490,11 +504,12 @@ export class Channel {
   // Ref-counts one interest; the first registration and the last
   // cancellation queue a sync of that segment's subscription.
   private addInterest(kind: InterestKind, segmentId: string): Subscription {
-    if (this.currentState === "closing" || this.currentState === "closed")
+    if (this.currentState === "closing" || this.currentState === "closed") {
       throw new ConnectionError(
         "NotConnected",
         "Channel is closed; create a new one with client.channel().",
       );
+    }
 
     const interests =
       kind === "message" ? this.messageInterests : this.presenceInterests;
@@ -536,24 +551,23 @@ export class Channel {
   ): InterestCommand | undefined {
     // Presence applies to every segment, the default one included: the
     // server's connect-time auto-join grants message membership only.
-    if (kind === "presence")
+    if (kind === "presence") {
       return {
         command: this.presenceInterests.has(segmentId)
           ? "PRES_SUB"
           : "PRES_UNSUB",
         segmentId,
       };
+    }
 
     // The server joins the default segment on connect and never leaves it.
     if (segmentId === DEFAULT_SEGMENT_ID) return undefined;
 
-    if (this.messageInterests.has(segmentId))
-      return { command: "SUB", segmentId };
-
-    // A presence subscription keeps the segment joined for messages.
-    if (this.presenceInterests.has(segmentId)) return undefined;
-
-    return { command: "UNSUB", segmentId };
+    // Watching presence is not membership, so it never holds the segment.
+    return {
+      command: this.messageInterests.has(segmentId) ? "SUB" : "UNSUB",
+      segmentId,
+    };
   } // end method interestCommand
 
   // The server's view of this connection's subscriptions is now unknown, so
@@ -575,21 +589,26 @@ export class Channel {
   ): Promise<PresencePage> {
     const handle = this.handle;
 
-    if (this.currentState !== "connected" || !handle)
+    if (this.currentState !== "connected" || !handle) {
       throw new ConnectionError(
         "NotConnected",
         `Channel is not connected; it is ${this.currentState}.`,
       );
-    if (this.pendingPresenceQuery)
+    }
+
+    if (this.pendingPresenceQuery) {
       throw new ConnectionError(
         "OperationInProgress",
         "A presence query is already in flight; wait for it to settle before starting another.",
       );
-    if (options?.signal?.aborted)
+    }
+
+    if (options?.signal?.aborted) {
       throw new ConnectionError(
         "Cancelled",
         "Presence query cancelled: its abort signal was already aborted.",
       );
+    }
 
     this.presenceRequestCount += 1;
     const requestId = `${this.presenceRequestCount}`;
@@ -661,15 +680,6 @@ export class Channel {
     );
   } // end method rejectPresenceQueryOnConnectionLoss
 
-  private resetCommandQueueOnConnectionLoss(): void {
-    this.commandQueue.reset(
-      new ConnectionError(
-        "NotConnected",
-        "Connection lost before the publish was sent; publish again once the channel reconnects.",
-      ),
-    );
-  } // end method resetCommandQueueOnConnectionLoss
-
   private async publishToSegment(
     segmentId: string,
     options: {
@@ -678,16 +688,24 @@ export class Channel {
       readonly signal?: AbortSignal;
     },
   ): Promise<void> {
-    if (this.currentState !== "connected" || !this.handle)
+    // While reconnecting, the publish waits in the queue for the next socket
+    // (QUEUE-01). Anywhere else no recovery is in progress.
+    if (
+      this.currentState !== "connected" &&
+      this.currentState !== "reconnecting"
+    ) {
       throw new ConnectionError(
         "NotConnected",
         `Channel is not connected; it is ${this.currentState}.`,
       );
-    if (options?.signal?.aborted)
+    }
+
+    if (options?.signal?.aborted) {
       throw new ConnectionError(
         "Cancelled",
         "Publish cancelled: its abort signal was already aborted.",
       );
+    }
 
     const bytes = encodeClientCommand({
       command: "PUB",
@@ -700,13 +718,19 @@ export class Channel {
   } // end method publishToSegment
 
   // Restoration goes through the queue, so it waits for writer room and
-  // always reaches the server before any publish.
+  // reaches the server before any publish, messages first, then presence.
   private flushInterests(): void {
-    for (const segmentId of this.messageInterests.keys())
-      this.commandQueue.queueInterest("message", segmentId);
+    const messages = Array.from(this.messageInterests.keys(), (segmentId) => ({
+      kind: "message" as const,
+      segmentId,
+    }));
 
-    for (const segmentId of this.presenceInterests.keys())
-      this.commandQueue.queueInterest("presence", segmentId);
+    const presence = Array.from(this.presenceInterests.keys(), (segmentId) => ({
+      kind: "presence" as const,
+      segmentId,
+    }));
+
+    this.commandQueue.restoreInterests([...messages, ...presence]);
   } // end method flushInterests
 
   private routeMessage(
@@ -717,8 +741,10 @@ export class Channel {
 
     switch (message.command) {
       case "ARRAY":
-        for (const entry of message.messages)
+        for (const entry of message.messages) {
           this.routeMessage(attemptGeneration, entry);
+        }
+
         return;
       case "MSG":
         this.deliverMessage(message);
@@ -744,12 +770,14 @@ export class Channel {
           return;
         }
 
-        if (message.type === RATE_LIMIT_ERROR_TYPE)
+        if (message.type === RATE_LIMIT_ERROR_TYPE) {
           this.commandQueue.receiveRateLimit();
+        }
 
         this.emitError(error);
         return;
       }
+
       case "SERVER_MSG":
         this.noticeListeners.dispatch({
           timestamp: message.timestamp,
@@ -809,15 +837,18 @@ export class Channel {
     // Ids are recorded before fanout, even with no listeners.
     if (!this.dedupWindow.recordIfNew(message.messageId)) return;
 
-    const listeners = this.segmentListeners.get(message.segmentId);
-    if (!listeners) return;
-
-    listeners.dispatch(message.payload, {
+    const metadata: MessageMetadata = {
       tokenReference: message.tokenReference,
       segmentId: message.segmentId,
       messageId: message.messageId,
       timestamp: message.timestamp,
-    });
+    };
+
+    // The segment's listeners first, then the channel's (MSG-02).
+    this.segmentListeners
+      .get(message.segmentId)
+      ?.dispatch(message.payload, metadata);
+    this.channelMessageListeners.dispatch(message.payload, metadata);
   } // end method deliverMessage
 
   private deliverPresence(
@@ -869,10 +900,12 @@ export class Channel {
 
   private enterReconnecting(): void {
     this.rejectPresenceQueryOnConnectionLoss();
-    this.resetCommandQueueOnConnectionLoss();
+    this.commandQueue.resetConnectionState();
     const now = this.internals.clock();
-    if (now - this.connectedAtMonotonic >= RETRY_BUDGET_RESET_MS)
+
+    if (now - this.connectedAtMonotonic >= RETRY_BUDGET_RESET_MS) {
       this.retriesUsed = 0;
+    }
 
     this.outage = {
       disconnectedAt: this.internals.wallClock(),
@@ -915,12 +948,13 @@ export class Channel {
       });
     } catch (error) {
       if (generation !== this.generation) return;
+
       if (
         error instanceof ConnectionError &&
         (error.code === "Transport" || error.code === "Timeout")
       ) {
         this.retriesUsed += 1;
-        if (this.retriesUsed >= MAXIMUM_RETRIES) {
+        if (this.retriesUsed >= this.internals.maximumReconnectAttempts) {
           this.failTerminal(error);
           return;
         }
@@ -951,9 +985,10 @@ export class Channel {
     });
   } // end method runReconnectAttempt
 
+  // Waiting publishes fail with the error onError reports (QUEUE-01).
   private failTerminal(error: ChannelError): void {
     this.rejectPresenceQueryOnConnectionLoss();
-    this.resetCommandQueueOnConnectionLoss();
+    this.commandQueue.reset(error);
     this.generation += 1;
     this.clearRetryTimer();
     this.emitError(error);
@@ -984,6 +1019,7 @@ export class Channel {
   private emitError(error: ChannelError): void {
     if (this.dispatchingErrors) return;
     this.dispatchingErrors = true;
+
     try {
       this.errorListeners.dispatch(error);
     } finally {

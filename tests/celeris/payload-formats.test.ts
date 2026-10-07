@@ -43,13 +43,14 @@ function readVarint(bytes: Uint8Array, offset: number): [number, number] {
   let value = 0;
   let shift = 0;
   let index = offset;
+
   for (;;) {
     const byte = bytes[index++]!;
     value |= (byte & 0x7f) << shift;
     if ((byte & 0x80) === 0) return [value, index];
     shift += 7;
   }
-}
+} // end function readVarint
 
 describe("celeris payload formats", () => {
   it.each([
@@ -92,6 +93,7 @@ describe("celeris payload formats", () => {
     for (const vector of [jsonVector, messagePackVector, protobufVector]) {
       await publisher.segment("formats").publish({ payload: vector });
     }
+
     await nextMessage(
       receiver.segment("formats"),
       () => received.size >= 3,
@@ -130,6 +132,7 @@ describe("celeris payload formats", () => {
     await publisher.close();
     await receiver.close();
   });
+
   it("carries helper and codec payloads through the live server", async () => {
     const reference = uniqueChannelReference("fmt-helpers");
     const publisher = await connectedChannel(reference);
@@ -153,6 +156,7 @@ describe("celeris payload formats", () => {
     await publisher
       .segment("formats")
       .publish({ payload: jsonPayload({ ok: true }) });
+
     await publisher
       .segment("formats")
       .publish({ payload: vectorCodec.encodePayload({ marker: 8 }) });

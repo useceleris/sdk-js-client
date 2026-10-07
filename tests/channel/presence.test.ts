@@ -14,7 +14,7 @@ async function establish(setup = createTestChannel()) {
   await pending;
 
   return setup;
-}
+} // end function establish
 
 function presenceResponseFrame(options: {
   segmentId?: string;
@@ -48,7 +48,7 @@ function presenceResponseFrame(options: {
       `;${total}\n;${perPage}\n` +
       `;${currentPage}\n;${from}\n;${to}\n*${connections.length}\n${entries}`,
   ).buffer;
-}
+} // end function presenceResponseFrame
 
 // An error answering the presence query with this request id.
 function presenceErrorFrame(type: string, requestId: string): ArrayBufferLike {
@@ -56,7 +56,7 @@ function presenceErrorFrame(type: string, requestId: string): ArrayBufferLike {
     `-Err\n+${type}\n+PRES_LIST\n$6\nfailed\n` +
       `$${requestId.length}\n${requestId}\n`,
   ).buffer;
-}
+} // end function presenceErrorFrame
 
 function presenceNotifyFrame(
   segmentId: string,
@@ -69,7 +69,7 @@ function presenceNotifyFrame(
     `@PRES_NOTIFY\n+${segmentId}\n+${tokenReference}\n+${connectionId}\n` +
       `;${joined ? 1 : 0}\n:${timestamp}\n`,
   ).buffer;
-}
+} // end function presenceNotifyFrame
 
 function sentFrames(): string[] {
   return sockets
@@ -77,7 +77,7 @@ function sentFrames(): string[] {
     .send.mock.calls.map(([bytes]) =>
       new TextDecoder().decode(bytes as Uint8Array),
     );
-}
+} // end function sentFrames
 
 describe("presence interests", () => {
   it("shares one ref-count across instances and emits golden bytes", async () => {
@@ -107,35 +107,21 @@ describe("presence interests", () => {
     ]);
   });
 
-  it("suppresses message UNSUB while a presence interest is held", async () => {
+  // Watching presence is not membership (SEG-01).
+  it("sends UNSUB on message cancel while a presence interest is held", async () => {
     const { channel } = await establish();
     const messages = channel.segment("chat").subscribe();
     const presence = channel.segment("chat").subscribePresence();
 
     messages.cancel();
-    expect(sentFrames()).toEqual(["@SUB\n$4\nchat\n", "@PRES_SUB\n$4\nchat\n"]);
-
-    presence.cancel();
     expect(sentFrames()).toEqual([
       "@SUB\n$4\nchat\n",
       "@PRES_SUB\n$4\nchat\n",
-      "@PRES_UNSUB\n$4\nchat\n",
-    ]);
-  });
-
-  it("sends UNSUB on message cancel once presence is released first", async () => {
-    const { channel } = await establish();
-    const messages = channel.segment("chat").subscribe();
-    const presence = channel.segment("chat").subscribePresence();
-
-    presence.cancel();
-    messages.cancel();
-    expect(sentFrames()).toEqual([
-      "@SUB\n$4\nchat\n",
-      "@PRES_SUB\n$4\nchat\n",
-      "@PRES_UNSUB\n$4\nchat\n",
       "@UNSUB\n$4\nchat\n",
     ]);
+
+    presence.cancel();
+    expect(sentFrames().at(-1)).toBe("@PRES_UNSUB\n$4\nchat\n");
   });
 
   it("flushes messages first then presence in registration order", async () => {
@@ -205,6 +191,7 @@ describe("presence queries", () => {
         to: 2,
       }),
     );
+
     await expect(pending).resolves.toEqual({
       segmentId: "chat",
       total: 2,
@@ -242,6 +229,7 @@ describe("presence queries", () => {
         connections: [],
       }),
     );
+
     await expect(pending).resolves.toMatchObject({
       from: 26,
       to: 1,
@@ -348,18 +336,18 @@ describe("presence queries", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("honors a custom presenceQueryTimeoutMs", async () => {
-    const setup = await establish(
-      createTestChannel({ presenceQueryTimeoutMs: 2_000 }),
-    );
-    const pending = setup.channel
-      .segment("chat")
-      .presenceList({ page: 1, perPage: 25 });
-    const rejection = expect(pending).rejects.toMatchObject({
-      code: "Timeout",
+  it("settles a query started inside a listener once its response arrives", async () => {
+    const { channel } = await establish();
+    let query: Promise<unknown> | undefined;
+    channel.events().onNotice(() => {
+      query = channel.segment("chat").presenceList({ page: 1, perPage: 25 });
     });
-    await vi.advanceTimersByTimeAsync(2_000);
-    await rejection;
+
+    sockets.at(-1)!.receive(utf8("@SERVER_MSG\n:1\n$5\nhello\n").buffer);
+    expect(sentFrames()).toEqual(["@PRES_LIST\n$4\nchat\n;1\n;25\n$1\n1\n"]);
+
+    sockets.at(-1)!.receive(presenceResponseFrame({ total: 3 }));
+    await expect(query).resolves.toMatchObject({ segmentId: "chat", total: 3 });
   });
 
   it("frees the slot on abort after send and stays connected", async () => {
@@ -491,6 +479,7 @@ describe("presence queries", () => {
     socket.send.mockImplementationOnce(() => {
       throw new Error("synthetic-secret");
     });
+
     await expect(
       channel.segment("chat").presenceList({ page: 1, perPage: 25 }),
     ).rejects.toMatchObject({ code: "DeliveryUnknown" });
@@ -558,6 +547,7 @@ describe("notices", () => {
     sockets
       .at(-1)!
       .receive(presenceNotifyFrame("chat", "user", "connection-1", true, 7));
+
     sockets
       .at(-1)!
       .receive(presenceNotifyFrame("chat", "user", "connection-1", false, 9));

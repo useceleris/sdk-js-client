@@ -11,7 +11,7 @@ export function blockImportSideEffects(): void {
       configurable: true,
       get() {
         throw new Error(`Import accessed forbidden capability: ${capability}`);
-      },
+      }, // end method get
     });
   }
-}
+} // end function blockImportSideEffects

@@ -20,12 +20,12 @@ function setup() {
   const onClose = vi.fn();
   const onError = vi.fn();
   return { credentialProvider, onMessage, onClose, onError };
-}
+} // end function setup
 
 async function flushCredentials(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
-}
+} // end function flushCredentials
 
 useTestWebSockets();
 
@@ -152,7 +152,7 @@ describe("connection attempt", () => {
       class {
         constructor() {
           throw new Error("synthetic-secret");
-        }
+        } // end constructor
       },
     );
     const error = await openConnection(configuration, setup()).catch(
@@ -283,7 +283,7 @@ describe("open connection", () => {
     const socket = sockets.at(-1)!;
     socket.open();
     return { handle: await pending, options, socket };
-  }
+  } // end function connect
 
   it("decodes binary messages in arrival order", async () => {
     vi.useFakeTimers();
@@ -363,6 +363,7 @@ describe("open connection", () => {
     options.onMessage.mockImplementation(() => {
       throw failure;
     });
+
     options.onError.mockImplementation(() => {
       throw new Error("another-secret");
     });
@@ -370,6 +371,7 @@ describe("open connection", () => {
     expect(() =>
       socket.receive(utf8("@SERVER_MSG\n:1\n$0\n\n").buffer),
     ).not.toThrow();
+
     expect(options.onError).toHaveBeenCalledWith(
       expect.objectContaining({
         code: "Transport",
@@ -415,11 +417,13 @@ describe("open connection", () => {
       throw new Error("synthetic-secret");
     });
     let sendFailure: unknown;
+
     try {
       handle.send(new Uint8Array());
     } catch (error) {
       sendFailure = error;
     }
+
     expect(sendFailure).toMatchObject({
       code: "DeliveryUnknown",
       message:

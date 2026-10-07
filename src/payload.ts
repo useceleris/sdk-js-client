@@ -20,10 +20,11 @@ export function jsonPayload(value: unknown): Uint8Array {
     // neither may surface the input.
   }
 
-  if (serialized === undefined)
+  if (serialized === undefined) {
     throw new ConfigurationError(
       "Value is not JSON-serializable: it is circular, contains a bigint, or is undefined, a function or a symbol.",
     );
+  }
 
   return TEXT_ENCODER.encode(serialized);
 } // end function jsonPayload

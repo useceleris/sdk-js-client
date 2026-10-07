@@ -23,7 +23,7 @@ function collect(
   channel.segment(segmentId).subscribe();
 
   return received;
-}
+} // end function collect
 
 const settle = (ms = 1_500) =>
   new Promise((resolve) => setTimeout(resolve, ms));
@@ -79,40 +79,6 @@ describe("celeris messaging", () => {
     await channel.close();
   });
 
-  it("demuxes segments and stops delivery after unsubscribe", async () => {
-    const reference = uniqueChannelReference("segments");
-    const publisher = await connectedChannel(reference);
-    const receiver = await connectedChannel(reference);
-    const alpha = collect(receiver, "alpha");
-    const beta: DeliveredMessage[] = [];
-    receiver
-      .segment("beta")
-      .onMessage((payload, metadata) => beta.push({ payload, ...metadata }));
-    const betaMembership = receiver.segment("beta").subscribe();
-    await settle();
-
-    await publisher.segment("alpha").publish({ payload: utf8("a") });
-    await publisher.segment("beta").publish({ payload: utf8("b") });
-    await nextMessage(
-      receiver.segment("alpha"),
-      (message) => text(message.payload) === "a",
-      "alpha delivery",
-    );
-    await settle();
-    expect(alpha.every((message) => message.segmentId === "alpha")).toBe(true);
-    expect(beta.every((message) => message.segmentId === "beta")).toBe(true);
-    const betaCount = beta.length;
-
-    betaMembership.cancel();
-    await settle();
-    await publisher.segment("beta").publish({ payload: utf8("late") });
-    await settle(2_500);
-    expect(beta.length).toBe(betaCount);
-
-    await publisher.close();
-    await receiver.close();
-  });
-
   it("delivers on the default segment without subscribing", async () => {
     const reference = uniqueChannelReference("default");
     const publisher = await connectedChannel(reference);
@@ -143,8 +109,11 @@ describe("celeris messaging", () => {
     await settle();
 
     const payload = new Uint8Array(100 * 1024);
-    for (let index = 0; index < payload.length; index += 1)
+
+    for (let index = 0; index < payload.length; index += 1) {
       payload[index] = index % 251;
+    }
+
     await publisher.segment("bulk").publish({ payload });
 
     const message = await nextMessage(
@@ -171,8 +140,9 @@ describe("celeris messaging", () => {
 
     const payload = new Uint8Array(1024 * 1024);
 
-    for (let index = 0; index < payload.length; index += 1)
+    for (let index = 0; index < payload.length; index += 1) {
       payload[index] = index % 251;
+    }
 
     await publisher.segment("bulk").publish({ payload });
 
@@ -273,8 +243,9 @@ describe("celeris messaging", () => {
     });
     let rateLimited = false;
     subscriber.events().onError((error) => {
-      if (error instanceof ServerError && error.type === "RateLimitError")
+      if (error instanceof ServerError && error.type === "RateLimitError") {
         rateLimited = true;
+      }
     });
 
     // The limiter tolerates bursts, so subscriptions go out in growing
@@ -282,6 +253,7 @@ describe("celeris messaging", () => {
     // recovery can restore them.
     const segmentIds: string[] = [];
     const delivered = new Set<string>();
+
     while (!rateLimited && segmentIds.length < 2_000) {
       for (let index = 0; index < 250; index += 1) {
         const segmentId = `limit-${segmentIds.length}`;
@@ -301,6 +273,7 @@ describe("celeris messaging", () => {
     // each subscription has recovered. A publish the publisher's own limit
     // drops is simply published again in the next round.
     const deadline = Date.now() + 150_000;
+
     while (delivered.size < segmentIds.length && Date.now() < deadline) {
       await settle(3_000);
       for (const segmentId of segmentIds) {
@@ -315,6 +288,7 @@ describe("celeris messaging", () => {
           if ((error as { code?: string }).code !== "Backpressure") throw error;
           await settle(2_000);
         }
+
         await settle(10);
       }
     }
@@ -324,4 +298,211 @@ describe("celeris messaging", () => {
     await publisher.close();
     await subscriber.close();
   }, 180_000);
+
+  // RESEND-01: a publish resent after a rate limit that had already been
+  // delivered is dropped by the receiver's dedup window.
+  it("delivers no duplicate under a publish rate limit", async () => {
+    const reference = uniqueChannelReference("limit-publish");
+    // Separate token references keep separate per-connection limits.
+    const receiver = await connectedChannel(reference, {
+      reference: "limit-receiver",
+    });
+
+    const publisher = await connectedChannel(reference, {
+      reference: "limit-publisher",
+    });
+
+    const delivered = collect(receiver, "burst");
+    await settle();
+
+    let rateLimited = false;
+    publisher.events().onError((error) => {
+      if (error instanceof ServerError && error.type === "RateLimitError") {
+        rateLimited = true;
+      }
+    });
+
+    // Growing bursts, paced like the subscription test, until one trips the
+    // limit. The ceiling on the total keeps the test finite. A publish the
+    // full queue refuses with Backpressure never went out, which is fine.
+    const published = new Set<string>();
+    let burstSize = 20;
+
+    while (!rateLimited && published.size < 1_000) {
+      const burst: Promise<void>[] = [];
+
+      for (let index = 0; index < burstSize; index += 1) {
+        const body = `burst-${published.size}`;
+        published.add(body);
+        burst.push(publisher.segment("burst").publish({ payload: utf8(body) }));
+      }
+
+      await Promise.allSettled(burst);
+      burstSize = Math.min(burstSize + 20, 60);
+      await settle(500);
+    }
+
+    expect(rateLimited, "the publish burst must trip the limit").toBe(true);
+
+    await settle(3_000);
+    const marker = nextMessage(
+      receiver.segment("burst"),
+      (message) => text(message.payload) === "marker",
+      "the marker",
+      30_000,
+    );
+
+    published.add("marker");
+    await publisher.segment("burst").publish({ payload: utf8("marker") });
+    await marker;
+    await settle();
+
+    const messageIds = delivered.map((message) => message.messageId);
+    const bodies = delivered.map((message) => text(message.payload));
+    expect(new Set(messageIds).size).toBe(messageIds.length);
+    expect(bodies.filter((body) => !published.has(body))).toEqual([]);
+    expect(bodies).toContain("marker");
+    expect(receiver.state).toBe("connected");
+    expect(publisher.state).toBe("connected");
+
+    await publisher.close();
+    await receiver.close();
+  }, 120_000);
+
+  it("delivers a custom message id unchanged and drops a repeat of it", async () => {
+    const reference = uniqueChannelReference("custom-id");
+    const publisher = await connectedChannel(reference);
+    const receiver = await connectedChannel(reference);
+    const received = collect(receiver, "chat");
+    await settle();
+    const messageId = `order-${Date.now()}`;
+
+    await publisher
+      .segment("chat")
+      .publish({ payload: utf8("first"), messageId });
+
+    await publisher
+      .segment("chat")
+      .publish({ payload: utf8("repeat"), messageId });
+    const marker = nextMessage(
+      receiver.segment("chat"),
+      (message) => text(message.payload) === "marker",
+      "the marker after the repeat",
+    );
+    await publisher.segment("chat").publish({ payload: utf8("marker") });
+    await marker;
+
+    expect(received.map((message) => text(message.payload))).toEqual([
+      "first",
+      "marker",
+    ]);
+    expect(received[0]!.messageId).toBe(messageId);
+
+    await publisher.close();
+    await receiver.close();
+  });
+
+  it("round-trips an empty payload", async () => {
+    const reference = uniqueChannelReference("empty");
+    const publisher = await connectedChannel(reference);
+    const receiver = await connectedChannel(reference);
+    receiver.segment("chat").subscribe();
+    await settle();
+
+    const arrived = nextMessage(
+      receiver.segment("chat"),
+      (message) => message.payload.length === 0,
+      "the empty payload",
+    );
+    await publisher.segment("chat").publish({ payload: new Uint8Array(0) });
+    const message = await arrived;
+
+    expect(message.payload).toEqual(new Uint8Array(0));
+    expect(message.messageId).toMatch(GENERATED_MESSAGE_ID);
+
+    await publisher.close();
+    await receiver.close();
+  });
+
+  it("refuses a payload one byte over the 1024 KiB plan cap", async () => {
+    const reference = uniqueChannelReference("cap-plus-one");
+    const channel = await connectedChannel(reference);
+
+    await channel
+      .segment("bulk")
+      .publish({ payload: new Uint8Array(1024 * 1024 + 1) });
+    const rejection = await nextError(
+      channel,
+      (error) =>
+        error instanceof ServerError && error.type === "MessageSizeLimitError",
+      "the MessageSizeLimitError frame",
+      20_000,
+    );
+
+    expect(rejection.message).toContain("size limit = 1024 KB");
+    expect(channel.state).toBe("connected");
+
+    await channel.close();
+  });
+
+  it("refuses a command over 2 MiB locally and stays connected", async () => {
+    const reference = uniqueChannelReference("local-ceiling");
+    const publisher = await connectedChannel(reference);
+    const receiver = await connectedChannel(reference);
+    const received = collect(receiver, "bulk");
+    await settle();
+
+    await expect(
+      publisher
+        .segment("bulk")
+        .publish({ payload: new Uint8Array(2 * 1024 * 1024) }),
+    ).rejects.toMatchObject({ name: "ConfigurationError" });
+    const after = nextMessage(
+      receiver.segment("bulk"),
+      (message) => text(message.payload) === "after",
+      "the publish after the refusal",
+    );
+    await publisher.segment("bulk").publish({ payload: utf8("after") });
+    await after;
+
+    expect(received.map((message) => text(message.payload))).toEqual(["after"]);
+    expect(publisher.state).toBe("connected");
+
+    await publisher.close();
+    await receiver.close();
+  });
+
+  it("delivers a paced burst of 50 messages in publish order, one time each", async () => {
+    const reference = uniqueChannelReference("burst");
+    const publisher = await connectedChannel(reference);
+    const receiver = await connectedChannel(reference);
+    const received = collect(receiver, "chat");
+    await settle();
+    const bodies = Array.from({ length: 50 }, (_, index) => `b${index}`);
+
+    const last = nextMessage(
+      receiver.segment("chat"),
+      (message) => text(message.payload) === "b49",
+      "the last message of the burst",
+      30_000,
+    );
+
+    // Paced below the per-second publish limit.
+    for (let start = 0; start < bodies.length; start += 10) {
+      for (const body of bodies.slice(start, start + 10)) {
+        await publisher.segment("chat").publish({ payload: utf8(body) });
+      }
+
+      await settle(1_100);
+    }
+
+    await last;
+    await settle();
+
+    expect(received.map((message) => text(message.payload))).toEqual(bodies);
+    expect(new Set(received.map((message) => message.messageId)).size).toBe(50);
+
+    await publisher.close();
+    await receiver.close();
+  }, 60_000);
 });

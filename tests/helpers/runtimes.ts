@@ -6,6 +6,7 @@ const runtimeSchema = z.object({
   kind: z.enum(["node", "bun", "deno"]),
   command: z.string().min(1),
 });
+
 export type Runtime = z.infer<typeof runtimeSchema>;
 
 export function readRuntimeMatrix(): Runtime[] {
@@ -22,7 +23,7 @@ export function readRuntimeMatrix(): Runtime[] {
             { name: "deno", kind: "deno", command: "deno" },
           ],
     );
-}
+} // end function readRuntimeMatrix
 
 export function runConsumer(
   runtime: Runtime,
@@ -34,4 +35,4 @@ export function runConsumer(
       ? ["run", "--no-config", "--node-modules-dir=manual", filename]
       : [filename];
   return JSON.parse(runCommand(runtime.command, argumentsList, directory));
-}
+} // end function runConsumer

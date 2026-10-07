@@ -9,6 +9,7 @@ export const identifierSchema = z
     (value) => !/[\r\n\uD800-\uDFFF]/u.test(value),
     "Must not contain CR, LF or unpaired UTF-16 surrogates",
   );
+
 const segmentFields = { segmentId: identifierSchema };
 
 export const clientCommandSchema = z.discriminatedUnion("command", [

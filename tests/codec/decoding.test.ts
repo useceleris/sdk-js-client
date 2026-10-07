@@ -11,33 +11,41 @@ describe("server decoding", () => {
   it.each(decodingVectors)("$name", ({ bytes, expected }) => {
     expect(decodeServerMessage(bytes)).toEqual(expected);
   });
+
   it.each(malformedVectors)("rejects malformed message %#", (bytes) => {
     expect(() => decodeServerMessage(bytes)).toThrow(ProtocolError);
   });
+
   it("rejects every truncation of a fixed peer message", () => {
     const bytes = decodingVectors[0]!.bytes;
+
     for (let length = 0; length < bytes.length; length += 1) {
       expect(() => decodeServerMessage(bytes.subarray(0, length))).toThrow(
         ProtocolError,
       );
     }
   });
+
   it("bounds nesting and counts fields as fragments", () => {
     expect(
       decodeServerMessage(utf8("*1\n".repeat(31) + "*0\n")),
     ).toHaveProperty("command", "ARRAY");
+
     expect(() => decodeServerMessage(utf8("*1\n".repeat(32) + "*0\n"))).toThrow(
       ProtocolError,
     );
+
     expect(
       decodeServerMessage(utf8("*4095\n" + "*0\n".repeat(4095))),
     ).toHaveProperty("command", "ARRAY");
+
     expect(() =>
       decodeServerMessage(
         utf8("*1366\n" + "@SERVER_MSG\n:1\n$0\n\n".repeat(1366)),
       ),
     ).toThrow(ProtocolError);
   });
+
   it("decodes messages larger than 1 MiB (LIMIT-01)", () => {
     // A prime-plan delivery: a full 1024 KiB payload plus its framing.
     const payloadLength = 1024 * 1024;
@@ -52,6 +60,7 @@ describe("server decoding", () => {
     expect(bytes.byteLength).toBeGreaterThan(1024 * 1024);
     expect(message).toMatchObject({ command: "MSG", segmentId: "chat" });
   });
+
   it("owns payload copies independently of inputs and siblings", () => {
     const bytes = utf8("*2\n@SERVER_MSG\n:1\n$1\nx\n@SERVER_MSG\n:1\n$1\nx\n");
     const original = new Uint8Array(bytes);
@@ -61,25 +70,31 @@ describe("server decoding", () => {
     if (result.command !== "ARRAY") {
       throw new Error("Expected array");
     }
+
     const first = result.messages[0]!;
     const second = result.messages[1]!;
+
     if (first.command !== "SERVER_MSG" || second.command !== "SERVER_MSG") {
       throw new Error("Expected notices");
     }
+
     expect(first.payload).toEqual(utf8("x"));
     first.payload[0] = 0;
     expect(second.payload).toEqual(utf8("x"));
   });
+
   it("rejects non-byte input with a safe error", () => {
     expect(() => decodeServerMessage(null as unknown as Uint8Array)).toThrow(
       ProtocolError,
     );
     let failure: unknown;
+
     try {
       decodeServerMessage(utf8("synthetic-secret"));
     } catch (error) {
       failure = error;
     }
+
     expect(failure).toMatchObject({
       code: "ProtocolError",
       message:
@@ -90,8 +105,10 @@ describe("server decoding", () => {
     expect(failure).not.toHaveProperty("cause");
     expect(JSON.stringify(failure)).not.toContain("synthetic-secret");
   });
+
   it("handles bounded deterministic mutated inputs without native exceptions", () => {
     let seed = 0xce1e;
+
     for (let attempt = 0; attempt < 512; attempt += 1) {
       const bytes = new Uint8Array(
         decodingVectors[attempt % decodingVectors.length]!.bytes,

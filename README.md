@@ -69,18 +69,19 @@ Your endpoint treats every field as untrusted: it authorizes the channel and dec
 
 ## Client options
 
-`createClient(options)` validates its options eagerly and throws a `ConfigurationError` naming the field and rule that failed. Every timeout, size and count is a positive integer.
+`createClient(options)` validates its options eagerly and throws a `ConfigurationError` naming the field and rule that failed. Every timeout, size and count is a positive integer. Each timeout is at most 900000 ms (15 minutes), and `maximumReconnectAttempts` is at most 100.
 
-| Option                    | Default                         | Meaning                                                                           |
-| ------------------------- | ------------------------------- | --------------------------------------------------------------------------------- |
-| `credentialProvider`      | required                        | Returns `{ payload, signature }` for every connection attempt                     |
-| `baseUrl`                 | `wss://realtime.useceleris.com` | The realtime socket endpoint; override only for a local or self-hosted stack      |
-| `allowInsecureLoopback`   | `false`                         | Accepts `ws://` for loopback hosts                                                |
-| `connectTimeoutMs`        | `15000`                         | Deadline for a first connection attempt, covering credentials and handshake       |
-| `reconnectTimeoutMs`      | `connectTimeoutMs`              | Deadline for each reconnect attempt, covering credentials and handshake           |
-| `presenceQueryTimeoutMs`  | `10000`                         | Deadline for `presenceList()`                                                     |
-| `publishQueueSize`        | `64`                            | Publishes that may wait for writer room; further ones reject with `Backpressure`  |
-| `deduplicationWindowSize` | `1024`                          | Message ids remembered per channel to drop duplicates, such as overlapping replay |
+| Option                     | Default                         | Meaning                                                                           |
+| -------------------------- | ------------------------------- | --------------------------------------------------------------------------------- |
+| `credentialProvider`       | required                        | Returns `{ payload, signature }` for every connection attempt                     |
+| `baseUrl`                  | `wss://realtime.useceleris.com` | The realtime socket endpoint; override only for a local or self-hosted stack      |
+| `allowInsecureLoopback`    | `false`                         | Accepts `ws://` for loopback hosts                                                |
+| `connectTimeoutMs`         | `15000`                         | Deadline for a first connection attempt, covering credentials and handshake       |
+| `reconnectTimeoutMs`       | `connectTimeoutMs`              | Deadline for each reconnect attempt, covering credentials and handshake           |
+| `presenceQueryTimeoutMs`   | `10000`                         | Deadline for `presenceList()`                                                     |
+| `publishQueueSize`         | `64`                            | Publishes that may wait for writer room; further ones reject with `Backpressure`  |
+| `deduplicationWindowSize`  | `1024`                          | Message ids remembered per channel to drop duplicates, such as overlapping replay |
+| `maximumReconnectAttempts` | `10`                            | Failed reconnect attempts, from 1 to 100, before the channel enters `failed`      |
 
 ## Channels and connection
 
@@ -137,7 +138,28 @@ stopChat();
 membership.cancel(); // idempotent
 ```
 
-Subscriptions are counted per channel and segment: the first sends the join, the last `cancel()` sends the leave, unless a presence subscription still holds the segment. The default segment is never left. Subscribing before `connect()` is fine — held subscriptions are sent on connect and restored after every reconnect. Read access is checked when the server joins the segment, so a write-only member receives nothing. A segment id is any non-empty string without CR or LF.
+Subscriptions are counted per channel and segment: the first sends the join, the last `cancel()` sends the leave. The default segment is never left. Subscribing before `connect()` is fine — held subscriptions are sent on connect and restored after every reconnect. Read access is checked when the server joins the segment, so a write-only member receives nothing. A segment id is any non-empty string without CR or LF.
+
+The server membership of the connection controls what it receives on a segment. A listener does not control it:
+
+- When you hold `subscribe()`, the segment sends messages to you. A listener alone receives nothing, unless the connection published to the segment.
+- A publish joins the connection to the segment. With read and write access, the connection then receives messages. With write access only, it receives nothing. With read access only, the server does not accept the publish, so you must call `subscribe()`.
+- The last `cancel()` stops the membership, also a membership from a publish. A presence subscription does not join a segment and does not keep a segment.
+- `"default"` always sends messages to you.
+- After a reconnect, the SDK subscribes again only to the segments that you hold a subscription for. A join from a publish does not continue. Call `subscribe()` for a segment that must continue to send messages to you.
+- Listeners and subscriptions operate independently. When you remove one, the other does not change.
+
+To receive all messages from all segments, add a listener to the channel. The segment listeners get each message first, then the channel listeners:
+
+```ts
+const removeChannelListener = channel
+  .events()
+  .onMessage((payload, metadata) => {
+    console.log(metadata.segmentId, readText(payload));
+  });
+```
+
+`removeChannelListener()` removes only this channel listener. The other channel listeners and the segment listeners continue to receive messages. Your subscriptions do not change, and the SDK does not send a message to the server. When you call it again, it has no effect.
 
 ## Publishing
 
@@ -155,7 +177,7 @@ try {
 } catch (error) {
   if (!(error instanceof ConnectionError)) throw error;
 
-  // "NotConnected": not connected, or the connection dropped before it went out.
+  // "NotConnected": not connected and not reconnecting (idle, connecting, failed or closed).
   // "Backpressure": publishQueueSize publishes (64 by default) are already waiting.
   // "Cancelled": your signal fired, or close() ran, before it was sent.
   // "DeliveryUnknown": the socket threw mid-send; it may or may not have gone out.
@@ -229,7 +251,7 @@ watching.cancel();
 stopPresence();
 ```
 
-`subscribePresence()` also joins the segment for messages, and cancelling it does not leave. Connect-time membership of `"default"` does not include presence, so subscribe to it like any other segment. Events are node-local — a watcher sees joins and leaves on its own server node — while `presenceList()` aggregates the cluster; pages are not an atomic snapshot, and past the last page `connections` is empty with `from > to`. A query needs a connected channel, allows one in flight per channel (`OperationInProgress` otherwise), validates `page` (1–2,147,483,647) and `perPage` (1–100) without clamping, and times out after `presenceQueryTimeoutMs` (default 10 s) without dropping the connection. A refused query rejects with a `ServerError` whose `subType` is `"PRES_LIST"`.
+`subscribePresence()` watches joins and leaves without joining: it delivers no messages, and the watcher is not itself announced or listed. Connect-time membership of `"default"` does not include presence, so subscribe to it like any other segment. Events and `presenceList()` both cover every server node serving the channel; pages are not an atomic snapshot, and past the last page `connections` is empty with `from > to`. A query needs a connected channel, allows one in flight per channel (`OperationInProgress` otherwise), validates `page` (1–2,147,483,647) and `perPage` (1–100) without clamping, and times out after `presenceQueryTimeoutMs` (default 10 s) without dropping the connection. A refused query rejects with a `ServerError` whose `subType` is `"PRES_LIST"`.
 
 ## Events and errors
 
@@ -241,7 +263,7 @@ Calls you make throw or reject at the call site; a failed first `connect()` and 
 | `ConnectionError`    | `Timeout`             | The connect deadline or a presence query deadline elapsed                                                                                |
 |                      | `Cancelled`           | Your abort signal fired, or `close()` cancelled the operation                                                                            |
 |                      | `Transport`           | The handshake or socket failed, the credential provider threw, or a listener threw                                                       |
-|                      | `NotConnected`        | The channel is not connected or is closed, or the connection dropped before a queued publish went out                                    |
+|                      | `NotConnected`        | A publish while the channel is idle, connecting, failed or closed; a publish while reconnecting waits instead                            |
 |                      | `Backpressure`        | `publishQueueSize` publishes (64 by default) are already waiting, or a presence query found the writer full or paused after a rate limit |
 |                      | `OperationInProgress` | `connect()` while already active, or a second `presenceList()` in flight                                                                 |
 |                      | `DeliveryUnknown`     | The socket threw after the bytes were handed over                                                                                        |
@@ -275,7 +297,9 @@ channel.events().onError((error) => {
 
 ## Reconnection and recovery
 
-A connected channel that loses its socket retries automatically with fresh credentials (`reason: "reconnect"`): up to 10 failed attempts, each after a random delay of up to 0.5 s × 2ⁿ (at most 30 s). Each attempt's deadline is `reconnectTimeoutMs` (defaulting to `connectTimeoutMs`), covering its credential request and handshake. The failure budget resets when a connection had stayed up for 60 s before it dropped. Only `Transport` and `Timeout` failures are retried; any other failure, or the tenth, is reported through `onError` and the channel enters `failed`. Held subscriptions are re-sent on the new socket, and the server rejoins `"default"` itself. Publishes are never re-sent across a reconnect.
+A connected channel that loses its socket retries automatically with fresh credentials (`reason: "reconnect"`): up to `maximumReconnectAttempts` failed attempts (10 by default), each after a random delay of up to 0.5 s × 2ⁿ (at most 30 s). Each attempt's deadline is `reconnectTimeoutMs` (defaulting to `connectTimeoutMs`), covering its credential request and handshake. The failure budget resets when a connection had stayed up for 60 s before it dropped. Only `Transport` and `Timeout` failures are retried; any other failure, or the last allowed one, is reported through `onError` and the channel enters `failed`. Held subscriptions are re-sent on the new socket, and the server rejoins `"default"` itself.
+
+Publishes not yet given to the socket wait across the reconnect, and so does a publish made while the channel is `reconnecting`: the queue keeps its `publishQueueSize` limit, and the publish resolves when the new socket takes it. The restored subscriptions go out first, then the queued publishes in call order. A failed attempt keeps the queue for the next one. When recovery ends in `failed`, each queued publish rejects with the error `onError` reports; `close()` rejects them with `Cancelled`. A publish the old socket was given is never sent again.
 
 ```ts
 channel.events().onRecovery((recovery) => {
@@ -290,35 +314,35 @@ The recovery event follows the `connected` state change; it does not mean replay
 ## Delivery semantics, honestly
 
 - `publish()` resolves on local socket acceptance. The protocol has no receipts or acks; the server's answers to subscriptions are untagged prose notices (`events().onNotice`) — do not parse them.
-- No offline queue, no durable history, no global ordering. Publishes still waiting when the connection drops are rejected.
-- A `RateLimitError` never names the command it dropped, so the client pauses (1 s plus growing jitter) and resends what it sent in the last 2 s: subscriptions first, as their current state, then up to 64 publishes, each at most once and with its original id so receivers drop a copy that had already arrived. After 8 limits in a row it treats the limit as a used-up quota: it stops resending and re-sends the subscriptions it dropped on a slow probe (after 1 min, doubling to at most 1 h) until commands go through without a limit; the probe schedule survives a reconnect. Resends count toward usage, and a resent subscription can re-announce a presence join.
+- No durable history, no global ordering. Publishes still waiting when the connection drops, and publishes made while reconnecting, are sent after the reconnect; they are rejected if recovery ends in `failed` or the channel is closed. Before the first connect, or after `failed`, a publish rejects with `NotConnected`.
+- A `RateLimitError` never names the command it dropped, so the client pauses (1 s plus growing jitter) and resends what it sent in the last 2 s: subscriptions first, as their current state, then up to 64 publishes, each at most once and with its original id so receivers drop a copy that had already arrived. After 8 limits in a row it treats the limit as a used-up quota: it stops resending and re-sends the subscriptions it dropped on a slow probe (after 1 min, doubling to at most 1 h) until commands go through without a limit; the probe schedule survives a reconnect. Resends count toward usage.
 - A denied or oversized publish still resolves locally; its `ServerError` arrives later through `onError` and cannot be matched to the call. A failed presence query is the exception: it rejects `presenceList()`.
 - Subscription changes go out ahead of publishes, but never ahead of an earlier publish to their own segment.
-- Publishing joins the segment server-side; subscribing to presence also joins it for messages.
+- Publishing joins the segment server-side; subscribing to presence does not.
 
 ## Limits and defaults
 
-| What              | Value                                                                                                                                       |
-| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| Outbound command  | 2 MiB encoded, rejected before any write                                                                                                    |
-| Publish payload   | Per plan, enforced by the server: 64 KiB free, 128 KiB standard, 512 KiB pro, 1024 KiB prime                                                |
-| Writer bounds     | 64 pending commands / 2 MiB incl. socket buffer; `publishQueueSize` queued publishes (64 by default), plus resends                          |
-| Rate-limit pause  | 1 s plus full jitter growing with consecutive limits, ≤31 s                                                                                 |
-| Resends           | Last 2 s of commands, at most 64 publishes, each once                                                                                       |
-| Quota probe       | After 8 limits in a row: dropped subscriptions retried after 1 min, doubling to 1 h                                                         |
-| Connect deadline  | `connectTimeoutMs`, default 15 s, covering credentials and handshake                                                                        |
-| Presence query    | `presenceQueryTimeoutMs`, default 10 s; one in flight per channel; `perPage` ≤ 100                                                          |
-| Reconnect         | 10 failed attempts, each bounded by `reconnectTimeoutMs` (default `connectTimeoutMs`), full jitter ≤30 s, budget reset after 60 s connected |
-| Replay lookback   | Outage plus 5 s, at most 4,294,967,295 ms                                                                                                   |
-| Dedup window      | `deduplicationWindowSize` message ids per channel, 1024 by default                                                                          |
-| Close             | 5 s graceful budget                                                                                                                         |
-| Channel reference | 1–255 ASCII letters, digits, `-` or `_`                                                                                                     |
+| What              | Value                                                                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Outbound command  | 2 MiB encoded, rejected before any write                                                                                                                                                   |
+| Publish payload   | Per plan, enforced by the server: 64 KiB free, 128 KiB standard, 512 KiB pro, 1024 KiB prime                                                                                               |
+| Writer bounds     | 64 pending commands / 2 MiB incl. socket buffer; `publishQueueSize` queued publishes (64 by default), plus resends                                                                         |
+| Rate-limit pause  | 1 s plus full jitter growing with consecutive limits, ≤31 s                                                                                                                                |
+| Resends           | Last 2 s of commands, at most 64 publishes, each once                                                                                                                                      |
+| Quota probe       | After 8 limits in a row: dropped subscriptions retried after 1 min, doubling to 1 h                                                                                                        |
+| Connect deadline  | `connectTimeoutMs`, default 15 s, covering credentials and handshake                                                                                                                       |
+| Presence query    | `presenceQueryTimeoutMs`, default 10 s; one in flight per channel; `perPage` ≤ 100                                                                                                         |
+| Reconnect         | `maximumReconnectAttempts` failed attempts (10 by default, 1–100), each bounded by `reconnectTimeoutMs` (default `connectTimeoutMs`), full jitter ≤30 s, budget reset after 60 s connected |
+| Replay lookback   | Outage plus 5 s, at most 4,294,967,295 ms                                                                                                                                                  |
+| Dedup window      | `deduplicationWindowSize` message ids per channel, 1024 by default                                                                                                                         |
+| Close             | 5 s graceful budget                                                                                                                                                                        |
+| Channel reference | 1–255 ASCII letters, digits, `-` or `_`                                                                                                                                                    |
 
 Received messages are never size-checked: the platform has already buffered them by the time they arrive. A publish over your plan's cap still counts toward your usage.
 
 ## Runtime notes
 
-- Listeners run synchronously, in registration order. One that throws is contained and reported through `onError` as a `Transport` error; the channel keeps running. Catch rejections from async work you start in a listener yourself.
+- Listeners run synchronously, in registration order. All listeners of a message get the same payload bytes and metadata. Do not change them. One that throws is contained and reported through `onError` as a `Transport` error; the channel keeps running. Catch rejections from async work you start in a listener yourself.
 - Listeners of one message share its `Uint8Array`; copy it before mutating.
 - Timestamps (`MessageMetadata.timestamp` and the presence and notice timestamps) are `bigint`, the exact signed 64-bit value. Every other figure, including presence counts and `retryIndex`, is a `number`. `JSON.stringify` throws on bigint, so serialize timestamps as decimal strings:
 
@@ -353,7 +377,7 @@ const client = createClient({
 
 ## Development
 
-`npm run check` runs the build, both typechecks, formatting and the local suite, which needs Node, Bun, Deno and the Playwright browsers; [runtime support](docs/runtime-support.md) describes the matrix. `npm run test:celeris` runs the acceptance suites against a real Celeris stack and needs `CELERIS_WS_URL`, `CELERIS_CLIENT_ID` and `CELERIS_SIGNING_SECRET`, read from a gitignored `.env` or the environment.
+`npm run check` runs the build, both typechecks, oxlint, Prettier and the local suite, which needs Node, Bun, Deno and the Playwright browsers; [runtime support](docs/runtime-support.md) describes the matrix. `npm run test:celeris` runs the acceptance suites against a real Celeris stack and needs `CELERIS_WS_URL`, `CELERIS_CLIENT_ID` and `CELERIS_SIGNING_SECRET`, read from a gitignored `.env` or the environment.
 
 Read [CONVENTIONS.md](CONVENTIONS.md) and the [code conventions](docs/code-conventions.md) before contributing, and [SECURITY.md](SECURITY.md) before reporting a vulnerability.
 
