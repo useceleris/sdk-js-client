@@ -258,6 +258,25 @@ describe("channel lifecycle", () => {
     ).toBeInstanceOf(Client);
   });
 
+  it.each([
+    "reconnectTimeoutMs",
+    "publishQueueSize",
+    "deduplicationWindowSize",
+  ] as const)("rejects a non-positive or fractional %s", (option) => {
+    const credentialProvider = async () => testCredentials;
+    const expectations: readonly [number, string][] = [
+      [0, "Too small: expected number to be >=1"],
+      [-1, "Too small: expected number to be >=1"],
+      [1.5, "Invalid input: expected int, received number"],
+    ];
+
+    for (const [value, rule] of expectations) {
+      expect(() =>
+        createClient({ credentialProvider, [option]: value }),
+      ).toThrow(`Invalid client options. ${option}: ${rule}.`);
+    }
+  });
+
   it("imports without creating WebSocket or timer", async () => {
     vi.resetModules();
     vi.useFakeTimers();

@@ -84,7 +84,10 @@ export class CommandQueue {
   private probeCount = 0;
   private firstSentSinceRateLimitAt: number | undefined;
 
-  constructor(private readonly delegates: CommandQueueDelegates) {}
+  constructor(
+    private readonly delegates: CommandQueueDelegates,
+    private readonly publishQueueSize: number,
+  ) {}
 
   queueInterest(kind: InterestKind, segmentId: string): void {
     this.markInterest(kind, segmentId);
@@ -97,11 +100,11 @@ export class CommandQueue {
     bytes: Uint8Array,
     signal?: AbortSignal,
   ): Promise<void> {
-    if (this.publishes.length >= MAXIMUM_PENDING_COMMANDS)
+    if (this.publishes.length >= this.publishQueueSize)
       return Promise.reject(
         new ConnectionError(
           "Backpressure",
-          `${MAXIMUM_PENDING_COMMANDS} publishes are already waiting to be sent. Retry once some have gone out.`,
+          `${this.publishQueueSize} publishes are already waiting to be sent. Retry once some have gone out.`,
         ),
       );
 

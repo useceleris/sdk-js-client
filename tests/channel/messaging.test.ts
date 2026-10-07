@@ -190,6 +190,32 @@ describe("publish", () => {
     expect(channel.state).toBe("connected");
   });
 
+  it("caps waiting publishes at the configured publishQueueSize", async () => {
+    const { channel } = await establish(
+      createTestChannel({ publishQueueSize: 2 }),
+    );
+    const socket = sockets.at(-1)!;
+    socket.bufferedAmount = 2 * 1024 * 1024; // the writer has no room
+
+    const lobby = channel.defaultSegment();
+    const queued = [
+      lobby.publish({ payload: utf8("x") }),
+      lobby.publish({ payload: utf8("x") }),
+    ];
+    await expect(lobby.publish({ payload: utf8("x") })).rejects.toMatchObject({
+      code: "Backpressure",
+      message:
+        "2 publishes are already waiting to be sent. Retry once some have gone out.",
+    });
+    expect(socket.send).not.toHaveBeenCalled();
+
+    socket.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(50);
+    await Promise.all(queued);
+    expect(socket.send).toHaveBeenCalledTimes(2);
+    expect(channel.state).toBe("connected");
+  });
+
   it("maps a native send failure to DeliveryUnknown and stays connected", async () => {
     const { channel } = await establish();
     const errors: unknown[] = [];
@@ -398,6 +424,24 @@ describe("delivery and dedup", () => {
 
     expect(delivered).toHaveLength(1026);
     expect(delivered.at(-1)).toBe("id-0");
+  });
+
+  it("evicts by the configured deduplicationWindowSize", async () => {
+    const { channel } = await establish(
+      createTestChannel({ deduplicationWindowSize: 2 }),
+    );
+    const delivered: string[] = [];
+    channel
+      .segment("chat")
+      .onMessage((_payload, metadata) => delivered.push(metadata.messageId));
+
+    sockets.at(-1)!.receive(messageFrame("chat", "id-a", "x"));
+    sockets.at(-1)!.receive(messageFrame("chat", "id-b", "x"));
+    sockets.at(-1)!.receive(messageFrame("chat", "id-c", "x"));
+    sockets.at(-1)!.receive(messageFrame("chat", "id-a", "x"));
+
+    // id-a was evicted when id-c arrived, so its replay is delivered again.
+    expect(delivered).toEqual(["id-a", "id-b", "id-c", "id-a"]);
   });
 
   it("keeps the window across reconnect and clears it on a fresh connect", async () => {

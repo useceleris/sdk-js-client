@@ -21,7 +21,6 @@ import { computeReplayLookbackMs, computeRetryDelayMs } from "./reconnect";
 import { Segment, type SegmentDelegates } from "./segment";
 import {
   CLOSE_BUDGET_MS,
-  DEDUP_WINDOW_SIZE,
   DEFAULT_SEGMENT_ID,
   LENIENT_TEXT_DECODER,
   MAXIMUM_RETRIES,
@@ -105,7 +104,10 @@ export type ChannelInternals = {
   readonly channelReference: string;
   readonly allowInsecureLoopback: boolean;
   readonly connectTimeoutMs: number;
+  readonly reconnectTimeoutMs: number;
   readonly presenceQueryTimeoutMs: number;
+  readonly publishQueueSize: number;
+  readonly deduplicationWindowSize: number;
   readonly credentialProvider: CredentialProvider;
   readonly clock: () => number;
   readonly wallClock: () => number;
@@ -154,13 +156,15 @@ class ListenerSet<T extends readonly unknown[]> {
 class DedupWindow {
   private readonly identifiers = new Set<string>();
 
+  constructor(private readonly windowSize: number) {}
+
   // Returns false for an identifier already in the window. A new one is
   // recorded, evicting the oldest once the window is full.
   recordIfNew(identifier: string): boolean {
     if (this.identifiers.has(identifier)) return false;
 
     this.identifiers.add(identifier);
-    if (this.identifiers.size > DEDUP_WINDOW_SIZE) {
+    if (this.identifiers.size > this.windowSize) {
       const oldest = this.identifiers.values().next().value;
       if (oldest !== undefined) this.identifiers.delete(oldest);
     }
@@ -188,14 +192,8 @@ export class Channel {
   private resolveClose: (() => void) | undefined;
   private dispatchingErrors = false;
 
-  private readonly commandQueue = new CommandQueue({
-    handle: () => this.handle,
-    interestCommand: (kind, segmentId) => this.interestCommand(kind, segmentId),
-    receiveInterestWriteFailure: () => this.receiveInterestWriteFailure(),
-    clock: () => this.internals.clock(),
-    random: () => this.internals.random(),
-  });
-  private readonly dedupWindow = new DedupWindow();
+  private readonly commandQueue: CommandQueue;
+  private readonly dedupWindow: DedupWindow;
   private readonly segmentListeners = new Map<
     string,
     ListenerSet<Parameters<MessageListener>>
@@ -252,7 +250,20 @@ export class Channel {
       this.queryPresence(segmentId, options),
   };
 
-  constructor(private readonly internals: ChannelInternals) {}
+  constructor(private readonly internals: ChannelInternals) {
+    this.commandQueue = new CommandQueue(
+      {
+        handle: () => this.handle,
+        interestCommand: (kind, segmentId) =>
+          this.interestCommand(kind, segmentId),
+        receiveInterestWriteFailure: () => this.receiveInterestWriteFailure(),
+        clock: () => this.internals.clock(),
+        random: () => this.internals.random(),
+      },
+      internals.publishQueueSize,
+    );
+    this.dedupWindow = new DedupWindow(internals.deduplicationWindowSize);
+  } // end constructor
 
   get state(): ChannelState {
     return this.currentState;
@@ -403,7 +414,10 @@ export class Channel {
         {
           credentialProvider: this.internals.credentialProvider,
           signal: controller.signal,
-          timeoutMs: this.internals.connectTimeoutMs,
+          timeoutMs:
+            recovery.reason === "reconnect"
+              ? this.internals.reconnectTimeoutMs
+              : this.internals.connectTimeoutMs,
           onMessage: (message) => this.routeMessage(generation, message),
           onClose: () => this.receiveSocketClose(generation),
           onError: (error) => this.receiveSocketError(generation, error),

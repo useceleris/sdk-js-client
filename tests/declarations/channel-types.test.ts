@@ -172,7 +172,10 @@ describe("channel type contracts", () => {
       readonly baseUrl?: string;
       readonly allowInsecureLoopback?: boolean;
       readonly connectTimeoutMs?: number;
+      readonly reconnectTimeoutMs?: number;
       readonly presenceQueryTimeoutMs?: number;
+      readonly publishQueueSize?: number;
+      readonly deduplicationWindowSize?: number;
     }>();
   });
 

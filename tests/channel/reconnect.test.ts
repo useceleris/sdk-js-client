@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createClient } from "../../src/client";
 import { ConfigurationError } from "../../src/errors";
 import {
   createTestChannel,
@@ -193,6 +194,99 @@ describe("channel reconnect", () => {
     expect(vi.getTimerCount()).toBe(1);
     await setup.channel.close();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("applies reconnectTimeoutMs to reconnect attempts only", async () => {
+    vi.useFakeTimers();
+    const setup = createTestChannel({
+      connectTimeoutMs: 15_000,
+      reconnectTimeoutMs: 3_000,
+    });
+    setup.credentialProvider.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+
+    const pending = setup.channel.connect();
+    const rejection = expect(pending).rejects.toMatchObject({
+      code: "Timeout",
+      message: "Connection attempt timed out after 15000 ms.",
+    });
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(setup.channel.state).toBe("connecting");
+    await vi.advanceTimersByTimeAsync(12_000);
+    await rejection;
+    expect(setup.channel.state).toBe("failed");
+
+    setup.credentialProvider.mockResolvedValue(testCredentials);
+    await establish(setup);
+    expect(setup.channel.state).toBe("connected");
+
+    const errors: unknown[] = [];
+    setup.channel.events().onError((error) => errors.push(error));
+    setup.credentialProvider.mockImplementation(
+      () => new Promise(() => undefined),
+    );
+    sockets.at(-1)!.disconnect();
+    expect(setup.channel.state).toBe("reconnecting");
+
+    const reconnectCredentialCalls = (): number =>
+      setup.credentialProvider.mock.calls.filter(
+        ([request]) => request.reason === "reconnect",
+      ).length;
+
+    // The first attempt starts on the zero-jitter retry and holds through
+    // the full reconnect deadline before timing out and retrying.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(reconnectCredentialCalls()).toBe(1);
+    await vi.advanceTimersByTimeAsync(2_999);
+    expect(reconnectCredentialCalls()).toBe(1);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(reconnectCredentialCalls()).toBe(2);
+
+    for (let attempt = 2; attempt <= 10; attempt += 1)
+      await vi.advanceTimersByTimeAsync(3_001);
+
+    await flushMicrotasks();
+    expect(reconnectCredentialCalls()).toBe(10);
+    expect(setup.channel.state).toBe("failed");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      code: "Timeout",
+      message: "Connection attempt timed out after 3000 ms.",
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("defaults the reconnect attempt deadline to connectTimeoutMs", async () => {
+    vi.useFakeTimers();
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
+    const credentialProvider = vi.fn(async () => testCredentials);
+    const channel = createClient({
+      baseUrl: "wss://example.test",
+      credentialProvider,
+      connectTimeoutMs: 5_000,
+    }).channel("room-1");
+
+    const pending = channel.connect();
+    await flushMicrotasks();
+    sockets.at(-1)!.open();
+    await pending;
+
+    credentialProvider.mockImplementation(() => new Promise(() => undefined));
+    sockets.at(-1)!.disconnect();
+    expect(channel.state).toBe("reconnecting");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(credentialProvider).toHaveBeenCalledTimes(2);
+
+    // The attempt holds for the full connect deadline, then times out and
+    // the immediate (zero-jitter) retry asks for credentials again.
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(credentialProvider).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2);
+    expect(credentialProvider).toHaveBeenCalledTimes(3);
+
+    await channel.close();
+    randomSpy.mockRestore();
   });
 
   it("stops reconnecting when closed mid-attempt", async () => {

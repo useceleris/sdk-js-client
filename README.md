@@ -67,6 +67,21 @@ The client never signs. It calls your `credentialProvider` for every connection 
 
 Your endpoint treats every field as untrusted: it authorizes the channel and decides whether to grant replay. A provider that throws or rejects fails the attempt with a `Transport` error (your error is not forwarded); output that is not two non-empty strings fails with a `ConfigurationError`. Never ship a signing secret or `@useceleris/server` in a browser or mobile bundle.
 
+## Client options
+
+`createClient(options)` validates its options eagerly and throws a `ConfigurationError` naming the field and rule that failed. Every timeout, size and count is a positive integer.
+
+| Option                    | Default                         | Meaning                                                                           |
+| ------------------------- | ------------------------------- | --------------------------------------------------------------------------------- |
+| `credentialProvider`      | required                        | Returns `{ payload, signature }` for every connection attempt                     |
+| `baseUrl`                 | `wss://realtime.useceleris.com` | The realtime socket endpoint; override only for a local or self-hosted stack      |
+| `allowInsecureLoopback`   | `false`                         | Accepts `ws://` for loopback hosts                                                |
+| `connectTimeoutMs`        | `15000`                         | Deadline for a first connection attempt, covering credentials and handshake       |
+| `reconnectTimeoutMs`      | `connectTimeoutMs`              | Deadline for each reconnect attempt, covering credentials and handshake           |
+| `presenceQueryTimeoutMs`  | `10000`                         | Deadline for `presenceList()`                                                     |
+| `publishQueueSize`        | `64`                            | Publishes that may wait for writer room; further ones reject with `Backpressure`  |
+| `deduplicationWindowSize` | `1024`                          | Message ids remembered per channel to drop duplicates, such as overlapping replay |
+
 ## Channels and connection
 
 `client.channel(reference)` returns a new, unconnected handle; a reference is 1–255 ASCII letters, digits, `-` or `_`. Creating clients, channels and segments does no network work.
@@ -141,7 +156,7 @@ try {
   if (!(error instanceof ConnectionError)) throw error;
 
   // "NotConnected": not connected, or the connection dropped before it went out.
-  // "Backpressure": 64 publishes are already waiting to be sent.
+  // "Backpressure": publishQueueSize publishes (64 by default) are already waiting.
   // "Cancelled": your signal fired, or close() ran, before it was sent.
   // "DeliveryUnknown": the socket threw mid-send; it may or may not have gone out.
   console.warn(error.code);
@@ -220,17 +235,17 @@ stopPresence();
 
 Calls you make throw or reject at the call site; a failed first `connect()` and a failed presence query are reported only there. Everything asynchronous — server errors, undecodable frames, a listener that threw, recovery giving up — arrives through `channel.events().onError`. Match SDK errors on `code`, never on message text; messages name the field and rule that failed but never include your input, credentials or server text.
 
-| Class                | `code`                | Raised when                                                                                                           |
-| -------------------- | --------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `ConfigurationError` | `Configuration`       | The call is wrong: an invalid option, identifier, payload or credential shape, or a command over 2 MiB. Fix the code. |
-| `ConnectionError`    | `Timeout`             | The connect deadline or a presence query deadline elapsed                                                             |
-|                      | `Cancelled`           | Your abort signal fired, or `close()` cancelled the operation                                                         |
-|                      | `Transport`           | The handshake or socket failed, the credential provider threw, or a listener threw                                    |
-|                      | `NotConnected`        | The channel is not connected or is closed, or the connection dropped before a queued publish went out                 |
-|                      | `Backpressure`        | 64 publishes are already waiting, or a presence query found the writer full or paused after a rate limit              |
-|                      | `OperationInProgress` | `connect()` while already active, or a second `presenceList()` in flight                                              |
-|                      | `DeliveryUnknown`     | The socket threw after the bytes were handed over                                                                     |
-| `ProtocolError`      | `ProtocolError`       | A received frame could not be decoded; it is dropped, the connection stays up, and `field`/`offset` say where         |
+| Class                | `code`                | Raised when                                                                                                                              |
+| -------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `ConfigurationError` | `Configuration`       | The call is wrong: an invalid option, identifier, payload or credential shape, or a command over 2 MiB. Fix the code.                    |
+| `ConnectionError`    | `Timeout`             | The connect deadline or a presence query deadline elapsed                                                                                |
+|                      | `Cancelled`           | Your abort signal fired, or `close()` cancelled the operation                                                                            |
+|                      | `Transport`           | The handshake or socket failed, the credential provider threw, or a listener threw                                                       |
+|                      | `NotConnected`        | The channel is not connected or is closed, or the connection dropped before a queued publish went out                                    |
+|                      | `Backpressure`        | `publishQueueSize` publishes (64 by default) are already waiting, or a presence query found the writer full or paused after a rate limit |
+|                      | `OperationInProgress` | `connect()` while already active, or a second `presenceList()` in flight                                                                 |
+|                      | `DeliveryUnknown`     | The socket threw after the bytes were handed over                                                                                        |
+| `ProtocolError`      | `ProtocolError`       | A received frame could not be decoded; it is dropped, the connection stays up, and `field`/`offset` say where                            |
 
 A rejected handshake is reported as `Transport`: no runtime exposes the handshake status to script, so the client cannot tell a bad credential from a network failure.
 
@@ -260,7 +275,7 @@ channel.events().onError((error) => {
 
 ## Reconnection and recovery
 
-A connected channel that loses its socket retries automatically with fresh credentials (`reason: "reconnect"`): up to 10 failed attempts, each after a random delay of up to 0.5 s × 2ⁿ (at most 30 s). The failure budget resets when a connection had stayed up for 60 s before it dropped. Only `Transport` and `Timeout` failures are retried; any other failure, or the tenth, is reported through `onError` and the channel enters `failed`. Held subscriptions are re-sent on the new socket, and the server rejoins `"default"` itself. Publishes are never re-sent across a reconnect.
+A connected channel that loses its socket retries automatically with fresh credentials (`reason: "reconnect"`): up to 10 failed attempts, each after a random delay of up to 0.5 s × 2ⁿ (at most 30 s). Each attempt's deadline is `reconnectTimeoutMs` (defaulting to `connectTimeoutMs`), covering its credential request and handshake. The failure budget resets when a connection had stayed up for 60 s before it dropped. Only `Transport` and `Timeout` failures are retried; any other failure, or the tenth, is reported through `onError` and the channel enters `failed`. Held subscriptions are re-sent on the new socket, and the server rejoins `"default"` itself. Publishes are never re-sent across a reconnect.
 
 ```ts
 channel.events().onRecovery((recovery) => {
@@ -270,7 +285,7 @@ channel.events().onRecovery((recovery) => {
 });
 ```
 
-The recovery event follows the `connected` state change; it does not mean replay has finished. Replay applies when your server signs it: each segment join then replays recent messages with their original ids. The client drops ids it has already delivered within a 1024-id window per channel, which survives reconnects and is cleared by an explicit `connect()`. Gaps beyond the replay window and duplicates older than the dedup window remain possible, so reload authoritative state from your own API after recovery.
+The recovery event follows the `connected` state change; it does not mean replay has finished. Replay applies when your server signs it: each segment join then replays recent messages with their original ids. The client drops ids it has already delivered within a `deduplicationWindowSize`-id window per channel (1024 by default), which survives reconnects and is cleared by an explicit `connect()`. Gaps beyond the replay window and duplicates older than the dedup window remain possible, so reload authoritative state from your own API after recovery.
 
 ## Delivery semantics, honestly
 
@@ -283,21 +298,21 @@ The recovery event follows the `connected` state change; it does not mean replay
 
 ## Limits and defaults
 
-| What              | Value                                                                                        |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| Outbound command  | 2 MiB encoded, rejected before any write                                                     |
-| Publish payload   | Per plan, enforced by the server: 64 KiB free, 128 KiB standard, 512 KiB pro, 1024 KiB prime |
-| Writer bounds     | 64 pending commands / 2 MiB incl. socket buffer; 64 queued publishes, plus resends           |
-| Rate-limit pause  | 1 s plus full jitter growing with consecutive limits, ≤31 s                                  |
-| Resends           | Last 2 s of commands, at most 64 publishes, each once                                        |
-| Quota probe       | After 8 limits in a row: dropped subscriptions retried after 1 min, doubling to 1 h          |
-| Connect deadline  | `connectTimeoutMs`, default 15 s, covering credentials and handshake                         |
-| Presence query    | `presenceQueryTimeoutMs`, default 10 s; one in flight per channel; `perPage` ≤ 100           |
-| Reconnect         | 10 failed attempts, full jitter ≤30 s, budget reset after 60 s connected                     |
-| Replay lookback   | Outage plus 5 s, at most 4,294,967,295 ms                                                    |
-| Dedup window      | 1024 message ids per channel                                                                 |
-| Close             | 5 s graceful budget                                                                          |
-| Channel reference | 1–255 ASCII letters, digits, `-` or `_`                                                      |
+| What              | Value                                                                                                                                       |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Outbound command  | 2 MiB encoded, rejected before any write                                                                                                    |
+| Publish payload   | Per plan, enforced by the server: 64 KiB free, 128 KiB standard, 512 KiB pro, 1024 KiB prime                                                |
+| Writer bounds     | 64 pending commands / 2 MiB incl. socket buffer; `publishQueueSize` queued publishes (64 by default), plus resends                          |
+| Rate-limit pause  | 1 s plus full jitter growing with consecutive limits, ≤31 s                                                                                 |
+| Resends           | Last 2 s of commands, at most 64 publishes, each once                                                                                       |
+| Quota probe       | After 8 limits in a row: dropped subscriptions retried after 1 min, doubling to 1 h                                                         |
+| Connect deadline  | `connectTimeoutMs`, default 15 s, covering credentials and handshake                                                                        |
+| Presence query    | `presenceQueryTimeoutMs`, default 10 s; one in flight per channel; `perPage` ≤ 100                                                          |
+| Reconnect         | 10 failed attempts, each bounded by `reconnectTimeoutMs` (default `connectTimeoutMs`), full jitter ≤30 s, budget reset after 60 s connected |
+| Replay lookback   | Outage plus 5 s, at most 4,294,967,295 ms                                                                                                   |
+| Dedup window      | `deduplicationWindowSize` message ids per channel, 1024 by default                                                                          |
+| Close             | 5 s graceful budget                                                                                                                         |
+| Channel reference | 1–255 ASCII letters, digits, `-` or `_`                                                                                                     |
 
 Received messages are never size-checked: the platform has already buffered them by the time they arrive. A publish over your plan's cap still counts toward your usage.
 
