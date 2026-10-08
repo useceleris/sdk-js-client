@@ -220,6 +220,49 @@ describe("publish", () => {
     ]);
   });
 
+  it("sends your own id unchanged, as a bulk string, from one character", async () => {
+    const { channel } = await establish();
+    const lobby = channel.defaultSegment();
+
+    await lobby.publish({ payload: utf8("x"), messageId: "a" });
+    await lobby.publish({
+      payload: utf8("y"),
+      messageId: "order-1042:shipped é",
+    });
+
+    expect(sentFrames()).toEqual([
+      "@PUB\n$7\ndefault\n$1\na\n$1\nx\n",
+      "@PUB\n$7\ndefault\n$21\norder-1042:shipped é\n$1\ny\n",
+    ]);
+  });
+
+  it("refuses your own id when it is empty or has a line break, and writes nothing", async () => {
+    const { channel } = await establish();
+    const lobby = channel.defaultSegment();
+
+    const refusals: Array<[string, string]> = [
+      ["", "Invalid command. messageId: Must not be empty."],
+      [
+        "a\nb",
+        "Invalid command. messageId: Must not contain CR, LF or unpaired UTF-16 surrogates.",
+      ],
+      [
+        "a\rb",
+        "Invalid command. messageId: Must not contain CR, LF or unpaired UTF-16 surrogates.",
+      ],
+    ];
+
+    for (const [messageId, message] of refusals) {
+      await expect(
+        lobby.publish({ payload: utf8("x"), messageId }),
+      ).rejects.toThrow(new ConfigurationError(message));
+    }
+
+    // Nothing was written; the control publish is the first frame.
+    await lobby.publish({ payload: utf8("x"), messageId: "control" });
+    expect(sentFrames()).toEqual(["@PUB\n$7\ndefault\n$7\ncontrol\n$1\nx\n"]);
+  });
+
   it("queues publishes behind a full writer and sends them once it drains", async () => {
     const { channel } = await establish();
     const socket = sockets.at(-1)!;
