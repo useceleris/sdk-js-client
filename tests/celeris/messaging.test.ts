@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { ServerError } from "../../src/index";
+import { ServerError, createClient } from "../../src/index";
+import { signCredentials } from "./helpers/credentials";
 import {
   GENERATED_MESSAGE_ID,
+  clientId,
   connectedChannel,
   nextError,
   nextMessage,
+  signingSecret,
   uniqueChannelReference,
+  websocketUrl,
   type DeliveredMessage,
 } from "./helpers/environment";
 
@@ -308,9 +312,18 @@ describe("celeris messaging", () => {
       reference: "limit-receiver",
     });
 
-    const publisher = await connectedChannel(reference, {
-      reference: "limit-publisher",
-    });
+    // A queue large enough for the whole burst, so that the publishes reach
+    // the server instead of being refused with Backpressure in the client.
+    const publisher = createClient({
+      baseUrl: websocketUrl(),
+      allowInsecureLoopback: true,
+      publishQueueSize: 10_000,
+      credentialProvider: async () =>
+        signCredentials(clientId(), signingSecret(), {
+          reference: "limit-publisher",
+        }),
+    }).channel(reference);
+    await publisher.connect();
 
     const delivered = collect(receiver, "burst");
     await settle();
@@ -322,13 +335,12 @@ describe("celeris messaging", () => {
       }
     });
 
-    // Growing bursts, paced like the subscription test, until one trips the
-    // limit. The ceiling on the total keeps the test finite. A publish the
+    // Bursts that double in size until one trips the limit. The ceiling on the total keeps the test finite. A publish the
     // full queue refuses with Backpressure never went out, which is fine.
     const published = new Set<string>();
-    let burstSize = 20;
+    let burstSize = 100;
 
-    while (!rateLimited && published.size < 1_000) {
+    while (!rateLimited && published.size < 5_000) {
       const burst: Promise<void>[] = [];
 
       for (let index = 0; index < burstSize; index += 1) {
@@ -338,8 +350,8 @@ describe("celeris messaging", () => {
       }
 
       await Promise.allSettled(burst);
-      burstSize = Math.min(burstSize + 20, 60);
-      await settle(500);
+      burstSize *= 2;
+      await settle(200);
     }
 
     expect(rateLimited, "the publish burst must trip the limit").toBe(true);
