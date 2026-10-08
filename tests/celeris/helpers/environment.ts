@@ -40,8 +40,9 @@ export const hasPeerWebsocketUrl = () =>
 export const peerWebsocketUrl = () => requireEnvironment("CELERIS_WS_URL_PEER");
 
 // The SDK gives every publish its own id, which the server delivers as is
-// (RESEND-01): 16 random bytes, hex-encoded.
-export const GENERATED_MESSAGE_ID = /^[0-9a-f]{32}$/;
+// (RESEND-01): msg__js_v<version>__, then 16 random bytes as hex.
+export const GENERATED_MESSAGE_ID =
+  /^msg__js_v[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9._]*__[0-9a-f]{32}$/;
 
 let channelCounter = 0;
 

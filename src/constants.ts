@@ -51,6 +51,12 @@ export const RATE_LIMIT_ERROR_TYPE = "RateLimitError";
 // other publishers, so they are random and long enough never to collide.
 export const MESSAGE_ID_RANDOM_BYTES = 16;
 
+// Every generated message id names the SDK that made it (RESEND-01). The
+// version is this package's; a test keeps it equal to package.json.
+export const SDK_LANGUAGE = "js";
+
+export const SDK_VERSION = "1.1.0";
+
 // Decoder bounds. These limit parsing work and recursion, not message size;
 // no legitimate server message approaches them.
 export const MAXIMUM_FRAGMENTS = 4096;

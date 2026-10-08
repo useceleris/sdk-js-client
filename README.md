@@ -166,7 +166,7 @@ const removeChannelListener = channel
 ```ts
 await chat.publish({ payload: textPayload("hello") });
 
-// Supply your own id; otherwise the client generates a random one.
+// Supply your own id; otherwise the client generates one.
 await chat.publish({ payload: textPayload("edited"), messageId: "msg-7f3a" });
 
 try {
@@ -186,6 +186,8 @@ try {
 ```
 
 `publish()` resolves when the bytes are handed to the local socket. That is local acceptance only: there is no server receipt. Publishing joins the segment server-side, even without `subscribe()`. An encoded command over 2 MiB rejects with a `ConfigurationError` before anything is sent; your plan's smaller payload cap is enforced by the server, which reports a `MessageSizeLimitError` through `onError` after the publish has resolved. When the socket's writer is full, a publish waits for room. The payload is copied when `publish()` is called, so the buffer can be reused at once.
+
+When you give no `messageId`, the client generates one: `msg__js_v`, the SDK version, two underscores, then 32 random lowercase hex digits, for example `msg__js_v1.1.0__4f1c9a0b7d2e43f6a8b5c1d0e9f27364`. A generated id holds only letters, digits, dots and underscores. The double underscores keep it apart from the ids that the server generates (`msg_{node}_…`). Receivers drop a repeated id in their deduplication window, so reuse your own id only to send the same message again.
 
 ## Payloads
 
