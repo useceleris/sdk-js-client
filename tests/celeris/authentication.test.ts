@@ -65,14 +65,17 @@ describe("celeris authentication", () => {
     });
   });
 
-  it("rejects expired and future timestamps; accepts inside the observed 60-minute window", async () => {
+  it("rejects timestamps older than 60 seconds or in the future; accepts one inside the window", async () => {
     const reference = uniqueChannelReference("window");
-    const expired = qualificationClient({
-      timestamp: Date.now() - 61 * 60 * 1_000,
-    }).channel(reference);
-    await expect(expired.connect()).rejects.toMatchObject({
-      code: "Transport",
-    });
+
+    for (const ageMs of [61 * 1_000, 59 * 60 * 1_000]) {
+      const expired = qualificationClient({
+        timestamp: Date.now() - ageMs,
+      }).channel(reference);
+      await expect(expired.connect()).rejects.toMatchObject({
+        code: "Transport",
+      });
+    }
 
     const future = qualificationClient({
       timestamp: Date.now() + 5 * 60 * 1_000,
@@ -81,13 +84,11 @@ describe("celeris authentication", () => {
       code: "Transport",
     });
 
-    // Documented intent is a 60-second window; the server accepts up to
-    // 60 minutes (D-001 evidence — recorded, not relied upon).
-    const stale = qualificationClient({
-      timestamp: Date.now() - 59 * 60 * 1_000,
+    const recent = qualificationClient({
+      timestamp: Date.now() - 30 * 1_000,
     }).channel(reference);
-    await stale.connect();
-    await stale.close();
+    await recent.connect();
+    await recent.close();
   });
 
   it("rejects a channel outside the token's restriction", async () => {
