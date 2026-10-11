@@ -138,15 +138,16 @@ stopChat();
 membership.cancel(); // idempotent
 ```
 
-Subscriptions are counted per channel and segment: the first sends the join, the last `cancel()` sends the leave. The default segment is never left. Subscribing before `connect()` is fine — held subscriptions are sent on connect and restored after every reconnect. Read access is checked when the server joins the segment, so a write-only member receives nothing. A segment id is any non-empty string without CR or LF.
+Subscriptions are counted per channel and segment: the first sends the join, the last `cancel()` sends the leave. The default segment is never left. Subscribing before `connect()` is fine — held subscriptions are sent on connect and restored after every reconnect. A subscription needs read access to the segment, and a publish needs write access. A segment id is any non-empty string without CR or LF.
 
 The server membership of the connection controls what it receives on a segment. A listener does not control it:
 
-- When you hold `subscribe()`, the segment sends messages to you. A listener alone receives nothing, unless the connection published to the segment.
-- A publish joins the connection to the segment. With read and write access, the connection then receives messages. With write access only, it receives nothing. With read access only, the server does not accept the publish, so you must call `subscribe()`.
-- The last `cancel()` stops the membership, also a membership from a publish. A presence subscription does not join a segment and does not keep a segment.
+- When you hold `subscribe()`, the segment sends messages to you. A listener alone receives nothing.
+- A publish does not join the segment. To receive messages from a segment, your own echo included, call `subscribe()`.
+- With write access only, the connection can publish, and the server refuses `subscribe()` with a `PermissionDeniedError`. With read access only, the connection can subscribe, and the server refuses the publish.
+- The last `cancel()` stops the membership. A presence subscription does not join a segment and does not keep a segment.
 - `"default"` always sends messages to you.
-- After a reconnect, the SDK subscribes again only to the segments that you hold a subscription for. A join from a publish does not continue. Call `subscribe()` for a segment that must continue to send messages to you.
+- After a reconnect, the SDK subscribes again to the segments that you hold a subscription for.
 - Listeners and subscriptions operate independently. When you remove one, the other does not change.
 
 To receive all messages from all segments, add a listener to the channel. The segment listeners get each message first, then the channel listeners:
@@ -185,7 +186,7 @@ try {
 }
 ```
 
-`publish()` resolves when the bytes are handed to the local socket. That is local acceptance only: there is no server receipt. Publishing joins the segment server-side, even without `subscribe()`. An encoded command over 2 MiB rejects with a `ConfigurationError` before anything is sent; your plan's smaller payload cap is enforced by the server, which reports a `MessageSizeLimitError` through `onError` after the publish has resolved. When the socket's writer is full, a publish waits for room. The payload is copied when `publish()` is called, so the buffer can be reused at once.
+`publish()` resolves when the bytes are handed to the local socket. That is local acceptance only: there is no server receipt. A publish does not join the segment: call `subscribe()` to receive from it. An encoded command over 2 MiB rejects with a `ConfigurationError` before anything is sent; your plan's smaller cap on the whole encoded command is enforced by the server, which reports a `MessageSizeLimitError` through `onError` after the publish has resolved. When the socket's writer is full, a publish waits for room. The payload is copied when `publish()` is called, so the buffer can be reused at once.
 
 When you give no `messageId`, the client generates one: `msg__js_v`, the SDK version, two underscores, then 32 random lowercase hex digits, for example `msg__js_v1.1.0__4f1c9a0b7d2e43f6a8b5c1d0e9f27364`. A generated id holds only letters, digits, dots and underscores. The double underscores keep it apart from the ids that the server generates (`msg_{node}_…`). Receivers drop a repeated id in their deduplication window, so reuse your own id only to send the same message again.
 
@@ -320,7 +321,7 @@ The recovery event follows the `connected` state change; it does not mean replay
 - A `RateLimitError` never names the command it dropped, so the client pauses (1 s plus growing jitter) and resends what it sent in the last 2 s: subscriptions first, as their current state, then up to 64 publishes, each at most once and with its original id so receivers drop a copy that had already arrived. After 8 limits in a row it treats the limit as a used-up quota: it stops resending and re-sends the subscriptions it dropped on a slow probe (after 1 min, doubling to at most 1 h) until commands go through without a limit; the probe schedule survives a reconnect. Resends count toward usage.
 - A denied or oversized publish still resolves locally; its `ServerError` arrives later through `onError` and cannot be matched to the call. A failed presence query is the exception: it rejects `presenceList()`.
 - Subscription changes go out ahead of publishes, but never ahead of an earlier publish to their own segment.
-- Publishing joins the segment server-side; subscribing to presence does not.
+- Publishing does not join a segment, and subscribing to presence does not. Only `subscribe()` joins.
 
 ## Limits and defaults
 

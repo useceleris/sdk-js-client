@@ -94,8 +94,8 @@ const stopChat = chat.onMessage((payload, metadata) => {
 const membership = chat.subscribe();
 
 // Publish to this segment. Resolution = the local socket ACCEPTED the bytes.
-// NOT a server receipt. Note: publishing auto-joins the segment server-side,
-// even without subscribe() — you'll appear in its presence.
+// NOT a server receipt. A publish does not join the segment: to receive
+// from it, hold a subscription.
 await chat.publish({ payload: jsonPayload({ hello: "world" }) });
 
 // The default segment needs no subscribe() — membership came with connect().
@@ -112,9 +112,9 @@ await lobby.publish({ payload: textPayload("hello lobby") });
 const lobbyMembership = lobby.subscribe();
 lobbyMembership.cancel();
 
-// All messages from all segments of this connection. This includes the
-// segments that the connection joins when it publishes, also when they have
-// no segment listener. The segment listeners get each message first.
+// All messages from all segments of this connection: "default" and each
+// subscribed segment, also when they have no segment listener. The segment
+// listeners get each message first.
 // removeChannelListener() removes only this listener.
 const removeChannelListener = channel
   .events()
