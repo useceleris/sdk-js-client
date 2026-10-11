@@ -210,17 +210,59 @@ describe("celeris segment membership", () => {
     });
   });
 
-  // Membership the server grants without a message subscription (SEG-01).
-  describe("joins the server makes", () => {
-    it("delivers to a segment joined by publishing", async () => {
-      const { publisher, receiver } = await pair("publish-join");
+  // A publish is not a membership: only a subscription receives (SEG-01).
+  describe("a publish does not join", () => {
+    it("delivers nothing to a connection that only publishes, and delivers once it subscribes", async () => {
+      const { publisher, receiver } = await pair("publish-no-join");
       const chat = received(receiver, "chat");
-      await receiver.segment("chat").publish({ payload: utf8("joining") });
+      publisher.segment("chat").subscribe();
       await settle();
 
-      await publishAndAwait(publisher, receiver, "chat", "after");
+      // The publish lands, which proves that it ran on the server.
+      await publishAndAwait(receiver, publisher, "chat", "from-receiver");
+      await publisher.segment("chat").publish({ payload: utf8("unheard") });
+      await confirmQuiet(publisher, receiver);
+      expect(chat).toEqual([]);
 
-      expect(chat).toEqual(["after"]);
+      receiver.segment("chat").subscribe();
+      await settle();
+      await publishAndAwait(publisher, receiver, "chat", "heard");
+
+      expect(chat).toEqual(["heard"]);
+    });
+
+    it("gives no echo on a named segment before a subscription", async () => {
+      const reference = uniqueChannelReference("publish-no-echo");
+      const publisher = track(await connectedChannel(reference));
+      const echoing = track(
+        await connectedChannel(reference, { allowEcho: true }),
+      );
+      const chat = received(echoing, "chat");
+
+      await echoing.segment("chat").publish({ payload: utf8("unheard") });
+      await confirmQuiet(publisher, echoing);
+      expect(chat).toEqual([]);
+
+      echoing.segment("chat").subscribe();
+      await settle();
+      await publishAndAwait(echoing, echoing, "chat", "echoed");
+
+      expect(chat).toEqual(["echoed"]);
+    });
+
+    it("does not list a connection that only publishes in the presence of the segment", async () => {
+      const { publisher, receiver } = await pair("publish-no-presence");
+      publisher.segment("chat").subscribe();
+      await settle();
+
+      await publishAndAwait(receiver, publisher, "chat", "from-receiver");
+      await settle(3_000);
+
+      const list = await publisher
+        .segment("chat")
+        .presenceList({ page: 1, perPage: 25 });
+
+      expect(list.connections).toHaveLength(1);
     });
 
     // Watching presence is not membership: it neither joins nor holds.
@@ -244,41 +286,11 @@ describe("celeris segment membership", () => {
 
       expect(chat).toEqual(["one"]);
     });
-
-    it("leaves a segment joined by publishing on the last cancel", async () => {
-      const { publisher, receiver } = await pair("publish-leave");
-      const chat = received(receiver, "chat");
-      await receiver.segment("chat").publish({ payload: utf8("joining") });
-      const membership = receiver.segment("chat").subscribe();
-      await settle();
-
-      membership.cancel();
-      await settle();
-      await publisher.segment("chat").publish({ payload: utf8("late") });
-      await confirmQuiet(publisher, receiver);
-
-      expect(chat).toEqual([]);
-    });
   });
 
-  // Publishing joins the segment, but read access is checked at the join:
-  // only a token that can read and write receives without subscribing.
+  // Write access publishes and read access subscribes. The two are separate.
   describe("token permissions", () => {
-    it("receives after publishing with a read-write token", async () => {
-      const { publisher, receiver } = await pair("publish-read-write", {
-        read: true,
-        write: true,
-      });
-      const chat = received(receiver, "chat");
-      await receiver.segment("chat").publish({ payload: utf8("joining") });
-      await settle();
-
-      await publishAndAwait(publisher, receiver, "chat", "after");
-
-      expect(chat).toEqual(["after"]);
-    });
-
-    it("receives nothing after publishing with a write-only token", async () => {
+    it("refuses a write-only token's subscription and still delivers its publish", async () => {
       const { publisher, receiver } = await pair("publish-write-only", {
         read: false,
         write: true,
@@ -287,12 +299,24 @@ describe("celeris segment membership", () => {
       publisher.segment("chat").subscribe();
       await settle();
 
-      // The publish lands, which proves the write-only connection is up.
-      await publishAndAwait(receiver, publisher, "chat", "joining");
+      const denial = nextError(
+        receiver,
+        (error) =>
+          "type" in error &&
+          error.type === "PermissionDeniedError" &&
+          error.subType === "SUB" &&
+          error.resource === "chat",
+        "the subscription denial",
+      );
+      receiver.segment("chat").subscribe();
+      await denial;
+
+      await publishAndAwait(receiver, publisher, "chat", "written");
       await publisher.segment("chat").publish({ payload: utf8("unheard") });
       await settle(2_500);
 
       expect(chat).toEqual([]);
+      expect(receiver.state).toBe("connected");
     });
 
     it("refuses a read-only token's publish and delivers once subscribed", async () => {
@@ -380,7 +404,8 @@ describe("celeris segment membership", () => {
         .onMessage((payload, metadata) =>
           seen.push(`${metadata.segmentId}:${text(payload)}`),
         );
-      await receiver.segment("joined").publish({ payload: utf8("joining") });
+      // A subscription with no segment listener, and the default segment.
+      receiver.segment("unlistened").subscribe();
       await settle();
 
       const both = waitFor<string[]>(
@@ -389,11 +414,11 @@ describe("celeris segment membership", () => {
         15_000,
         "both channel-wide deliveries",
       );
-      await publisher.segment("joined").publish({ payload: utf8("x") });
+      await publisher.segment("unlistened").publish({ payload: utf8("x") });
       await publisher.defaultSegment().publish({ payload: utf8("y") });
       await both;
 
-      expect([...seen].sort()).toEqual(["default:y", "joined:x"]);
+      expect([...seen].sort()).toEqual(["default:y", "unlistened:x"]);
     });
   });
 });

@@ -944,9 +944,9 @@ describe("channel-wide delivery", () => {
 
     sockets.at(-1)!.receive(messageFrame("chat", "id-1", "hi"));
     sockets.at(-1)!.receive(messageFrame("default", "id-2", "yo"));
-    sockets.at(-1)!.receive(messageFrame("joined-by-publish", "id-3", "ok"));
+    sockets.at(-1)!.receive(messageFrame("no-listener", "id-3", "ok"));
 
-    expect(seen).toEqual(["chat:hi", "default:yo", "joined-by-publish:ok"]);
+    expect(seen).toEqual(["chat:hi", "default:yo", "no-listener:ok"]);
   });
 
   it("runs after the segment's listeners in the same dispatch", async () => {

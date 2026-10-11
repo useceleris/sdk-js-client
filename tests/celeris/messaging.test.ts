@@ -214,14 +214,23 @@ describe("celeris messaging", () => {
     await readOnly.close();
   });
 
-  it("keeps a write-only token publishing while receiving nothing", async () => {
+  it("keeps a write-only token publishing while its subscription is refused", async () => {
     const reference = uniqueChannelReference("writeonly");
     const writeOnly = await connectedChannel(reference, {
       tokenPermission: { read: false, write: true },
     });
     const reader = await connectedChannel(reference);
+    const refused = nextError(
+      writeOnly,
+      (error) =>
+        error instanceof ServerError &&
+        error.type === "PermissionDeniedError" &&
+        error.subType === "SUB",
+      "the subscription denial",
+    );
     const writerSaw = collect(writeOnly, "chat");
     reader.segment("chat").subscribe();
+    await refused;
     await settle();
 
     await writeOnly.segment("chat").publish({ payload: utf8("one-way") });

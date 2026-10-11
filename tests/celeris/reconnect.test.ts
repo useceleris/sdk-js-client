@@ -293,30 +293,6 @@ describe("celeris reconnect", () => {
     expect(bodies(chat)).toEqual(["m1", "m2", "m3"]);
   }, 90_000);
 
-  it("does not rejoin a segment that the connection joined only by publishing", async () => {
-    const setup = await setUp("reconnect-publish-join");
-    const { receiver, publisher } = setup;
-    const team = received(receiver, "team");
-    await receiver.connect();
-    await publish(receiver, "team", "joining");
-    await settle();
-    const before = arrival(receiver, "team", "before");
-    await publish(publisher, "team", "before");
-    await before;
-
-    await setup.startOutage();
-    await setup.endOutage();
-    await settle();
-
-    await publish(publisher, "team", "after");
-    const control = arrival(receiver, "default", "control");
-    await publish(publisher, "default", "control");
-    await control;
-    await settle(2_500);
-
-    expect(bodies(team)).toEqual(["before"]);
-  }, 90_000);
-
   it("announces the new connection and restores its presence subscription after a reconnect", async () => {
     const setup = await setUp("reconnect-presence");
     const { receiver, publisher } = setup;

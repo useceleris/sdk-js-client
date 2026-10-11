@@ -85,13 +85,15 @@ describe("celeris per-segment permissions", () => {
     expect(limited.state).toBe("connected");
   });
 
-  it("lets a write-only segment publish and receive nothing", async () => {
+  it("lets a write-only segment publish and refuses its subscription", async () => {
     const reference = uniqueChannelReference("perm-write");
     const reader = await open(reference);
     const limited = await open(reference, SEGMENT_PERMISSIONS);
     const writeonly = received(limited, "writeonly");
     reader.segment("writeonly").subscribe();
+    const refused = denial(limited, "SUB", "writeonly");
     limited.segment("writeonly").subscribe();
+    await refused;
     await settle();
 
     const arrived = nextMessage(
@@ -107,6 +109,28 @@ describe("celeris per-segment permissions", () => {
     await settle(2_500);
 
     expect(writeonly).toEqual([]);
+    expect(limited.state).toBe("connected");
+  });
+
+  it("replays a write-only publish to a later subscriber", async () => {
+    const reference = uniqueChannelReference("perm-write-replay");
+    const limited = await open(reference, SEGMENT_PERMISSIONS);
+    const writeonly = received(limited, "writeonly");
+    // No connection is in the segment when the write-only token publishes.
+    await limited.segment("writeonly").publish({ payload: utf8("kept") });
+    await settle();
+
+    const reader = await open(reference, { replay: true });
+    const replayed = nextMessage(
+      reader.segment("writeonly"),
+      (message) => text(message.payload) === "kept",
+      "the replay of the write-only publish",
+    );
+    reader.segment("writeonly").subscribe();
+    await replayed;
+
+    expect(writeonly).toEqual([]);
+    expect(limited.state).toBe("connected");
   });
 
   it("refuses presence on a segment without read access", async () => {

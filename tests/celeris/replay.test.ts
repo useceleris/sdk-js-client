@@ -220,20 +220,27 @@ describe("celeris replay", () => {
     expect(bodies(beta)).toEqual(["b1"]);
   });
 
-  it("replays to a segment joined by publishing", async () => {
-    const reference = uniqueChannelReference("replay-publish-join");
+  it("starts no replay with a publish, and replays on the subscription", async () => {
+    const reference = uniqueChannelReference("replay-publish-no-join");
     const publisher = await open(reference);
+    // A member keeps the segment, and its backlog, on the server.
+    publisher.segment("history").subscribe();
+    await settle();
     await publishAll(publisher, "history", ["h1"]);
     await settle();
 
     const receiver = await open(reference, { replay: true });
     const history = received(receiver, "history");
+    await receiver.segment("history").publish({ payload: utf8("no-join") });
+    await settle(2_500);
+    expect(bodies(history)).toEqual([]);
+
     const replay = arrival(receiver, "history", "h1");
-    await receiver.segment("history").publish({ payload: utf8("joining") });
+    receiver.segment("history").subscribe();
     await replay;
     await settle();
 
-    expect(bodies(history)).toEqual(["h1"]);
+    expect(bodies(history)).toContain("h1");
   });
 
   it("recovers what a re-join missed and drops what it already delivered", async () => {
