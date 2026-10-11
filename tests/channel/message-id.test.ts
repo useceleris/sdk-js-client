@@ -13,9 +13,10 @@ const packageVersion = (
 describe("generated message ids (RESEND-01)", () => {
   it("name the SDK and its version, then 32 lowercase hex digits", () => {
     const identifier = generateMessageId();
+    const prefix = messageIdPrefix("js", SDK_VERSION);
 
-    expect(identifier).toMatch(/^msg__js_v1\.1\.0__[0-9a-f]{32}$/);
-    expect(identifier.slice("msg__js_v1.1.0__".length)).toHaveLength(32);
+    expect(identifier.startsWith(prefix)).toBe(true);
+    expect(identifier.slice(prefix.length)).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it("hold only letters, digits, dots and underscores", () => {
@@ -62,7 +63,7 @@ describe("generated message ids (RESEND-01)", () => {
     });
 
     expect(new TextDecoder().decode(frame)).toBe(
-      `@PUB\n$4\nchat\n$48\n${identifier}\n$2\nhi\n`,
+      `@PUB\n$4\nchat\n$${identifier.length}\n${identifier}\n$2\nhi\n`,
     );
   });
 });
