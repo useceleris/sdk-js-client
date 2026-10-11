@@ -133,8 +133,9 @@ describe("celeris messaging", () => {
   });
 
   // Needs the qualification app on a plan with message_size_limit_in_kb of
-  // at least 1024, which the CI seed guarantees.
-  it("round-trips a full 1024 KiB payload, larger than 1 MiB once framed", async () => {
+  // at least 1024, which the CI seed guarantees. The cap counts the whole
+  // encoded command, so the largest payload is the cap less its framing.
+  it("round-trips a payload just under the 1024 KiB plan cap, larger than 1 MiB once framed", async () => {
     const reference = uniqueChannelReference("huge");
     const publisher = await connectedChannel(reference);
     const receiver = await connectedChannel(reference);
@@ -142,7 +143,7 @@ describe("celeris messaging", () => {
     receiver.segment("bulk").subscribe();
     await settle();
 
-    const payload = new Uint8Array(1024 * 1024);
+    const payload = new Uint8Array(1024 * 1024 - 96);
 
     for (let index = 0; index < payload.length; index += 1) {
       payload[index] = index % 251;
@@ -155,7 +156,7 @@ describe("celeris messaging", () => {
     const message = await nextMessage(
       receiver.segment("bulk"),
       (received) => received.payload.length === payload.length,
-      "the 1024 KiB delivery",
+      "the delivery just under the cap",
       30_000,
     );
 
@@ -436,13 +437,15 @@ describe("celeris messaging", () => {
     await receiver.close();
   });
 
-  it("refuses a payload one byte over the 1024 KiB plan cap", async () => {
-    const reference = uniqueChannelReference("cap-plus-one");
+  // The cap counts the command's framing, so a payload of the cap itself
+  // makes a command over it.
+  it("refuses a full 1024 KiB payload", async () => {
+    const reference = uniqueChannelReference("cap-full");
     const channel = await connectedChannel(reference);
 
     await channel
       .segment("bulk")
-      .publish({ payload: new Uint8Array(1024 * 1024 + 1) });
+      .publish({ payload: new Uint8Array(1024 * 1024) });
     const rejection = await nextError(
       channel,
       (error) =>
@@ -513,6 +516,51 @@ describe("celeris messaging", () => {
 
     expect(received.map((message) => text(message.payload))).toEqual(bodies);
     expect(new Set(received.map((message) => message.messageId)).size).toBe(50);
+
+    await publisher.close();
+    await receiver.close();
+  }, 60_000);
+
+  it("refuses over-cap publishes in a burst by message id and delivers the rest in order", async () => {
+    const reference = uniqueChannelReference("batch");
+    const publisher = await connectedChannel(reference);
+    const receiver = await connectedChannel(reference);
+    const refused: ServerError[] = [];
+    publisher.events().onError((error) => {
+      if (error instanceof ServerError) refused.push(error);
+    });
+    const received = collect(receiver, "chat");
+    await settle();
+    const bodies = Array.from({ length: 20 }, (_, index) => `b${index}`);
+
+    const last = nextMessage(
+      receiver.segment("chat"),
+      (message) => text(message.payload) === "b19",
+      "the last message of the burst",
+      30_000,
+    );
+
+    // The second over-cap publish waits for buffer room, so the small ones
+    // wait behind it and go out packed (BATCH-01).
+    const chat = publisher.segment("chat");
+    const overCap = new Uint8Array(1024 * 1024 + 1);
+    await Promise.all([
+      chat.publish({ payload: overCap, messageId: "too-big-1" }),
+      chat.publish({ payload: overCap, messageId: "too-big-2" }),
+      ...bodies.map((body) => chat.publish({ payload: utf8(body) })),
+    ]);
+
+    await last;
+    await settle();
+
+    expect(received.map((message) => text(message.payload))).toEqual(bodies);
+    expect(new Set(received.map((message) => message.messageId)).size).toBe(20);
+    expect(
+      refused.map((error) => [error.type, error.subType, error.resource]),
+    ).toEqual([
+      ["MessageSizeLimitError", "PUB", "too-big-1"],
+      ["MessageSizeLimitError", "PUB", "too-big-2"],
+    ]);
 
     await publisher.close();
     await receiver.close();
