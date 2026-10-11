@@ -6,7 +6,7 @@
 // they arrive, so checking them bounds no memory and only discards data.
 //
 // The command bound is the server's transport ceiling: above it no plan can
-// accept a command. Each plan's own, smaller payload cap is enforced by the
+// accept a command. Each plan's own, smaller command cap is enforced by the
 // server and surfaces as a MessageSizeLimitError server error.
 export const MAXIMUM_COMMAND_BYTES = 2 * 1024 * 1024;
 
@@ -15,6 +15,16 @@ export const MAXIMUM_COMMAND_BYTES = 2 * 1024 * 1024;
 export const MAXIMUM_BUFFERED_BYTES = MAXIMUM_COMMAND_BYTES;
 
 export const MAXIMUM_PENDING_COMMANDS = 64;
+
+// Batching (BATCH-01). Commands waiting when the writer sends go out together
+// in one `*N` frame of at most this many commands and bytes, header included.
+// A command larger than the byte bound goes alone. The server refuses an array
+// of more than 16 commands.
+export const MAXIMUM_BATCH_COMMANDS = 16;
+
+export const MAXIMUM_BATCH_BYTES = 64 * 1024;
+
+export const MESSAGE_SIZE_LIMIT_ERROR_TYPE = "MessageSizeLimitError";
 
 // Outbound recovery (RESEND-01). A rate limit is reported without saying
 // which frame it dropped, so whatever went out recently is resent.

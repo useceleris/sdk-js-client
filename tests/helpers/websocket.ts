@@ -41,7 +41,46 @@ export class TestWebSocket extends EventTarget {
     this.readyState = TestWebSocket.CLOSED;
     this.dispatchEvent(new Event("close"));
   } // end method disconnect
+
+  // Every command sent, in order, with each `*N` frame split into its
+  // commands.
+  sentCommands(): string[] {
+    return this.send.mock.calls.flatMap(([bytes]) =>
+      splitFrame(bytes as Uint8Array).map((command) =>
+        new TextDecoder().decode(command),
+      ),
+    );
+  } // end method sentCommands
 } // end class TestWebSocket
+
+function splitFrame(frame: Uint8Array): Uint8Array[] {
+  const lineFeed = "\n".charCodeAt(0);
+  if (frame[0] !== "*".charCodeAt(0)) return [frame];
+
+  const commands: Uint8Array[] = [];
+  let offset = frame.indexOf(lineFeed) + 1;
+
+  while (offset < frame.length) {
+    const start = offset;
+    offset = frame.indexOf(lineFeed, offset) + 1;
+
+    // Fields follow the command name until the next command starts.
+    while (offset < frame.length && frame[offset] !== "@".charCodeAt(0)) {
+      const lineEnd = frame.indexOf(lineFeed, offset);
+      const bulkLength =
+        frame[offset] === "$".charCodeAt(0)
+          ? Number(
+              new TextDecoder().decode(frame.subarray(offset + 1, lineEnd)),
+            )
+          : -1;
+      offset = lineEnd + 1 + (bulkLength >= 0 ? bulkLength + 1 : 0);
+    }
+
+    commands.push(frame.subarray(start, offset));
+  }
+
+  return commands;
+} // end function splitFrame
 
 export const sockets: TestWebSocket[] = [];
 

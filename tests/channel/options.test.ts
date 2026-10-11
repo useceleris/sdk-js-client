@@ -372,7 +372,8 @@ describe("publish queue size", () => {
     socket.bufferedAmount = 0;
     await vi.advanceTimersByTimeAsync(50);
     await Promise.all(queued);
-    expect(socket.send).toHaveBeenCalledTimes(64);
+    expect(socket.send).toHaveBeenCalledTimes(4);
+    expect(socket.sentCommands()).toHaveLength(64);
   });
 
   it("sends many queued publishes in the order they were made", async () => {
@@ -390,7 +391,7 @@ describe("publish queue size", () => {
     socket.bufferedAmount = 0;
     await vi.advanceTimersByTimeAsync(50);
     await Promise.all(queued);
-    expect(sentFrames(socket)).toEqual(
+    expect(socket.sentCommands()).toEqual(
       identifiers.map(
         (messageId) =>
           `@PUB\n$7\ndefault\n$${messageId.length}\n${messageId}\n$1\nx\n`,

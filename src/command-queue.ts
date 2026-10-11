@@ -1,10 +1,12 @@
 import type { ChannelError } from "./channel";
 import type { ConnectionHandle } from "./connection";
-import { encodeClientCommand } from "./encode";
+import { encodeBatch, encodeClientCommand } from "./encode";
 import { ConnectionError } from "./errors";
 import { computeRetryDelayMs } from "./reconnect";
 import {
   DRAIN_RETRY_MS,
+  MAXIMUM_BATCH_BYTES,
+  MAXIMUM_BATCH_COMMANDS,
   MAXIMUM_CONSECUTIVE_RATE_LIMITS,
   MAXIMUM_PENDING_COMMANDS,
   MAXIMUM_PUBLISH_RESENDS,
@@ -39,6 +41,7 @@ export type CommandQueueDelegates = {
 
 type QueuedPublish = {
   readonly segmentId: string;
+  readonly messageId: string;
   readonly bytes: Uint8Array;
   // Its place in the order commands were queued in.
   readonly sequence: number;
@@ -47,9 +50,21 @@ type QueuedPublish = {
   settle: ((error?: ChannelError) => void) | undefined;
 };
 
+type PendingInterest = {
+  readonly kind: InterestKind;
+  readonly segmentId: string;
+  readonly sequence: number;
+};
+
+// A command taken for the frame being packed.
+type BatchedCommand =
+  | (PendingInterest & { readonly bytes: Uint8Array })
+  | { readonly publish: QueuedPublish; readonly bytes: Uint8Array };
+
 const INTEREST_KINDS: readonly InterestKind[] = ["message", "presence"];
 
-// Sends subscription changes ahead of publishes, waits out a full writer, and
+// Sends subscription changes ahead of publishes, packs the commands waiting
+// when it sends into one frame (BATCH-01), waits out a full writer, and
 // resends recent commands after a rate limit (RESEND-01). The server never
 // says which frame a rate limit dropped, so everything sent within the suspect
 // window is resent: subscriptions as their current state, publishes once and
@@ -104,6 +119,7 @@ export class CommandQueue {
   // Resolves once the publish is handed to the socket.
   publish(
     segmentId: string,
+    messageId: string,
     bytes: Uint8Array,
     signal?: AbortSignal,
   ): Promise<void> {
@@ -132,6 +148,7 @@ export class CommandQueue {
       this.sequence += 1;
       const publish: QueuedPublish = {
         segmentId,
+        messageId,
         bytes,
         sequence: this.sequence,
         resends: 0,
@@ -215,10 +232,18 @@ export class CommandQueue {
     }, delay);
   } // end method receiveRateLimit
 
+  // The server refused this publish for its size, so a later rate limit must
+  // not send it, and bill it, again.
+  forgetPublish(messageId: string): void {
+    this.recentPublishes = this.recentPublishes.filter(
+      (sent) => sent.publish.messageId !== messageId,
+    );
+  } // end method forgetPublish
+
   // Restored subscriptions go ahead of every waiting publish, even one queued
   // earlier to the same segment, so the connection is a member of its
-  // segments again before the publishes join them (QUEUE-01). Drains once
-  // all are marked, so no publish slips between them.
+  // segments again before the publishes go out (QUEUE-01). Drains once all
+  // are marked, so no publish slips between them.
   restoreInterests(
     interests: readonly { kind: InterestKind; segmentId: string }[],
   ): void {
@@ -353,27 +378,138 @@ export class CommandQueue {
       RATE_LIMIT_SUSPECT_WINDOW_MS,
     );
 
-    while (true) {
-      const interest = this.nextReadyInterest();
-
-      if (interest) {
-        if (!this.sendInterest(handle, interest.kind, interest.segmentId)) {
-          return;
-        }
-
-        continue;
-      }
-
-      const publish = this.publishes[0];
-      if (!publish || !this.sendPublish(handle, publish)) return;
-    }
+    while (this.sendBatch(handle));
   } // end method drain
 
+  // Sends the waiting commands as one frame. False when draining has to stop.
+  private sendBatch(handle: ConnectionHandle): boolean {
+    if (!this.nextCommand()) return false;
+
+    if (!this.hasRoom(handle)) {
+      this.scheduleDrain();
+      return false;
+    }
+
+    const batch = this.packBatch(
+      MAXIMUM_PENDING_COMMANDS - this.pendingCommands,
+    );
+
+    try {
+      handle.send(encodeBatch(batch.map((command) => command.bytes)));
+    } catch (error) {
+      if (error instanceof ConnectionError && error.code === "Backpressure") {
+        this.unpackBatch(batch);
+        this.scheduleDrain();
+        return false;
+      }
+
+      return this.failBatch(batch, error as ChannelError);
+    }
+
+    this.pendingCommands += batch.length;
+    this.firstSentSinceRateLimitAt ??= this.delegates.clock();
+
+    for (const command of batch) {
+      if ("publish" in command) {
+        this.recordSentPublish(command.publish);
+        command.publish.settle?.();
+      } else {
+        this.recordSentInterest(command.kind, command.segmentId);
+      }
+    }
+
+    return true;
+  } // end method sendBatch
+
+  // Takes the waiting commands for one frame, in order: at most `room` and
+  // MAXIMUM_BATCH_COMMANDS of them, within MAXIMUM_BATCH_BYTES with the array
+  // header. A first command larger than that goes alone.
+  private packBatch(room: number): BatchedCommand[] {
+    const batch: BatchedCommand[] = [];
+    let byteLength = 0;
+
+    while (batch.length < Math.min(room, MAXIMUM_BATCH_COMMANDS)) {
+      const command = this.nextCommand();
+      if (!command) break;
+
+      const frameLength =
+        `*${batch.length + 1}\n`.length + byteLength + command.bytes.byteLength;
+      if (batch.length > 0 && frameLength > MAXIMUM_BATCH_BYTES) break;
+
+      if ("publish" in command) {
+        this.publishes.shift();
+      } else {
+        this.pendingInterests[command.kind].delete(command.segmentId);
+      }
+
+      batch.push(command);
+      byteLength += command.bytes.byteLength;
+    }
+
+    return batch;
+  } // end method packBatch
+
+  // The next command to send, left in place. A subscription change that needs
+  // nothing sent is done here.
+  private nextCommand(): BatchedCommand | undefined {
+    for (
+      let interest = this.nextReadyInterest();
+      interest;
+      interest = this.nextReadyInterest()
+    ) {
+      const command = this.delegates.interestCommand(
+        interest.kind,
+        interest.segmentId,
+      );
+      if (command) return { ...interest, bytes: encodeClientCommand(command) };
+
+      this.pendingInterests[interest.kind].delete(interest.segmentId);
+    }
+
+    const publish = this.publishes[0];
+    return publish && { publish, bytes: publish.bytes };
+  } // end method nextCommand
+
+  // The socket had no room for the frame, so its commands wait again.
+  private unpackBatch(batch: readonly BatchedCommand[]): void {
+    const publishes: QueuedPublish[] = [];
+
+    for (const command of batch) {
+      if ("publish" in command) {
+        publishes.push(command.publish);
+      } else {
+        this.pendingInterests[command.kind].set(
+          command.segmentId,
+          command.sequence,
+        );
+      }
+    }
+
+    this.publishes = [...publishes, ...this.publishes];
+  } // end method unpackBatch
+
+  // Every publish in a frame the socket refused fails with its error;
+  // ConnectionHandle.send throws nothing but SDK errors, such as
+  // DeliveryUnknown. A refused subscription change leaves the server's view
+  // unknown, so draining stops.
+  private failBatch(
+    batch: readonly BatchedCommand[],
+    error: ChannelError,
+  ): boolean {
+    for (const command of batch) {
+      if ("publish" in command) command.publish.settle?.(error);
+    }
+
+    if (batch.every((command) => "publish" in command)) return true;
+
+    this.delegates.receiveInterestWriteFailure();
+    return false;
+  } // end method failBatch
+
   // The first subscription change with no earlier publish to its segment
-  // still queued: publishing joins the segment, so a change has to follow
-  // the publishes queued before it for the segment to end up as asked.
-  private nextReadyInterest():
-    { readonly kind: InterestKind; readonly segmentId: string } | undefined {
+  // still queued: the commands for one segment keep their call order, so a
+  // change follows the publishes queued before it (RESEND-01).
+  private nextReadyInterest(): PendingInterest | undefined {
     for (const kind of INTEREST_KINDS) {
       for (const [segmentId, sequence] of this.pendingInterests[kind]) {
         const blocked = this.publishes.some(
@@ -381,88 +517,12 @@ export class CommandQueue {
             publish.segmentId === segmentId && publish.sequence < sequence,
         );
 
-        if (!blocked) return { kind, segmentId };
+        if (!blocked) return { kind, segmentId, sequence };
       }
     }
 
     return undefined;
   } // end method nextReadyInterest
-
-  // False when draining has to stop.
-  private sendInterest(
-    handle: ConnectionHandle,
-    kind: InterestKind,
-    segmentId: string,
-  ): boolean {
-    const command = this.delegates.interestCommand(kind, segmentId);
-
-    if (command) {
-      let sent: boolean;
-
-      try {
-        sent = this.write(handle, encodeClientCommand(command));
-      } catch {
-        this.delegates.receiveInterestWriteFailure();
-        return false;
-      }
-
-      if (!sent) return false;
-
-      this.recordSentInterest(kind, segmentId);
-    }
-
-    this.pendingInterests[kind].delete(segmentId);
-    return true;
-  } // end method sendInterest
-
-  // False when draining has to stop. A publish the socket refuses fails
-  // alone; ConnectionHandle.send throws nothing but SDK errors, such as
-  // DeliveryUnknown.
-  private sendPublish(
-    handle: ConnectionHandle,
-    publish: QueuedPublish,
-  ): boolean {
-    let sent: boolean;
-
-    try {
-      sent = this.write(handle, publish.bytes);
-    } catch (error) {
-      this.publishes.shift();
-      publish.settle?.(error as ChannelError);
-      return true;
-    }
-
-    if (!sent) return false;
-
-    this.publishes.shift();
-    this.recordSentPublish(publish);
-    publish.settle?.();
-    return true;
-  } // end method sendPublish
-
-  // False when the writer is full; a drain is then scheduled. Any other send
-  // failure is thrown for the caller to handle.
-  private write(handle: ConnectionHandle, bytes: Uint8Array): boolean {
-    if (!this.hasRoom(handle)) {
-      this.scheduleDrain();
-      return false;
-    }
-
-    try {
-      handle.send(bytes);
-    } catch (error) {
-      if (error instanceof ConnectionError && error.code === "Backpressure") {
-        this.scheduleDrain();
-        return false;
-      }
-
-      throw error;
-    }
-
-    this.pendingCommands += 1;
-    this.firstSentSinceRateLimitAt ??= this.delegates.clock();
-    return true;
-  } // end method write
 
   // No native drain event exists: the command count resets whenever the
   // buffer is observed empty (documented approximation).

@@ -290,7 +290,9 @@ describe("publish", () => {
     await vi.advanceTimersByTimeAsync(50);
     await Promise.all(queued);
 
-    expect(socket.send).toHaveBeenCalledTimes(128);
+    // The 64 that waited go out as 4 frames of 16.
+    expect(socket.send).toHaveBeenCalledTimes(68);
+    expect(socket.sentCommands()).toHaveLength(128);
     expect(channel.state).toBe("connected");
   });
 
@@ -310,6 +312,198 @@ describe("publish", () => {
   });
 });
 
+describe("batching", () => {
+  // A full socket buffer makes the writer hold every command until release.
+  async function establishHeld() {
+    const setup = await establish();
+    const socket = sockets.at(-1)!;
+    socket.bufferedAmount = 2 * 1024 * 1024;
+
+    return { ...setup, socket };
+  } // end function establishHeld
+
+  async function release(socket: TestWebSocket): Promise<void> {
+    socket.bufferedAmount = 0;
+    await vi.advanceTimersByTimeAsync(50);
+  } // end function release
+
+  function publishCommand(messageId: string, payload: string): string {
+    return `@PUB\n$4\nchat\n$${messageId.length}\n${messageId}\n$${payload.length}\n${payload}\n`;
+  } // end function publishCommand
+
+  it("sends the commands waiting for the writer as one array, in order", async () => {
+    const { channel, socket } = await establishHeld();
+    const chat = channel.segment("chat");
+    chat.subscribe();
+    const published = [
+      chat.publish({ payload: utf8("m1"), messageId: "id-1" }),
+      chat.publish({ payload: utf8("m2"), messageId: "id-2" }),
+    ];
+    expect(socket.send).not.toHaveBeenCalled();
+
+    await release(socket);
+    await Promise.all(published);
+
+    expect(sentFrames()).toEqual([
+      "*3\n@SUB\n$4\nchat\n" +
+        publishCommand("id-1", "m1") +
+        publishCommand("id-2", "m2"),
+    ]);
+  });
+
+  it("sends a single waiting command without an array header", async () => {
+    const { channel, socket } = await establishHeld();
+    const published = channel
+      .segment("chat")
+      .publish({ payload: utf8("x"), messageId: "id-1" });
+
+    await release(socket);
+    await published;
+
+    expect(sentFrames()).toEqual([publishCommand("id-1", "x")]);
+  });
+
+  it("packs at most 16 commands into one frame", async () => {
+    const { channel, socket } = await establishHeld();
+    const identifiers = Array.from({ length: 17 }, (_, index) => `m-${index}`);
+    const published = identifiers.map((messageId) =>
+      channel.segment("chat").publish({ payload: utf8("x"), messageId }),
+    );
+
+    await release(socket);
+    await Promise.all(published);
+
+    const frames = sentFrames();
+    expect(frames).toHaveLength(2);
+    expect(frames[0]!.startsWith("*16\n@PUB")).toBe(true);
+    expect(frames[1]).toBe(publishCommand("m-16", "x"));
+    expect(socket.sentCommands()).toEqual(
+      identifiers.map((messageId) => publishCommand(messageId, "x")),
+    );
+  });
+
+  it("packs commands up to 64 KiB with the array header, and no further", async () => {
+    // A publish here is 26 bytes of framing plus its payload, so `*2\n` and
+    // payloads of 32 740 and 32 741 bytes make exactly 65 536.
+    const { channel, socket } = await establishHeld();
+    const chat = channel.segment("chat");
+    const fits = [
+      chat.publish({ payload: new Uint8Array(32_740), messageId: "a" }),
+      chat.publish({ payload: new Uint8Array(32_741), messageId: "b" }),
+    ];
+
+    await release(socket);
+    await Promise.all(fits);
+
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect((socket.send.mock.calls[0]![0] as Uint8Array).byteLength).toBe(
+      65_536,
+    );
+
+    socket.bufferedAmount = 2 * 1024 * 1024;
+    const overflows = [
+      chat.publish({ payload: new Uint8Array(32_740), messageId: "c" }),
+      chat.publish({ payload: new Uint8Array(32_742), messageId: "d" }),
+    ];
+
+    await release(socket);
+    await Promise.all(overflows);
+
+    expect(socket.send).toHaveBeenCalledTimes(3);
+    expect(
+      sentFrames()
+        .slice(1)
+        .map((frame) => frame.slice(0, 4)),
+    ).toEqual(["@PUB", "@PUB"]);
+  });
+
+  it("sends a command larger than 64 KiB alone", async () => {
+    const { channel, socket } = await establishHeld();
+    const chat = channel.segment("chat");
+    const published = [
+      chat.publish({ payload: utf8("x"), messageId: "a" }),
+      chat.publish({ payload: new Uint8Array(70 * 1024), messageId: "b" }),
+      chat.publish({ payload: utf8("x"), messageId: "c" }),
+    ];
+
+    await release(socket);
+    await Promise.all(published);
+
+    const frames = sentFrames();
+    expect(frames).toHaveLength(3);
+    expect(frames[0]).toBe(publishCommand("a", "x"));
+    expect(frames[1]!.startsWith("@PUB\n$4\nchat\n$1\nb\n$71680\n")).toBe(true);
+    expect(frames[2]).toBe(publishCommand("c", "x"));
+  });
+
+  it("fails every publish in a frame the socket refuses with DeliveryUnknown", async () => {
+    const { channel, socket } = await establishHeld();
+    const published = ["a", "b", "c"].map((messageId) =>
+      channel.segment("chat").publish({ payload: utf8("x"), messageId }),
+    );
+    const outcomes = Promise.allSettled(published);
+    socket.send.mockImplementation(() => {
+      throw new Error("synthetic-secret");
+    });
+
+    await release(socket);
+
+    expect(await outcomes).toEqual(
+      Array.from({ length: 3 }, () => ({
+        status: "rejected",
+        reason: expect.objectContaining({ code: "DeliveryUnknown" }),
+      })),
+    );
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(channel.state).toBe("connected");
+  });
+
+  it("reconnects when a refused frame carried a subscription change", async () => {
+    const { channel, socket } = await establishHeld();
+    channel.segment("chat").subscribe();
+    const published = channel
+      .segment("lobby")
+      .publish({ payload: utf8("x"), messageId: "a" });
+    const outcome = Promise.allSettled([published]);
+    socket.send.mockImplementation(() => {
+      throw new Error("synthetic-secret");
+    });
+
+    await release(socket);
+
+    expect(await outcome).toEqual([
+      {
+        status: "rejected",
+        reason: expect.objectContaining({ code: "DeliveryUnknown" }),
+      },
+    ]);
+    expect(channel.state).toBe("reconnecting");
+  });
+
+  it("takes a cancelled publish out before the next frame is packed", async () => {
+    const { channel, socket } = await establishHeld();
+    const chat = channel.segment("chat");
+    const controller = new AbortController();
+    const first = chat.publish({ payload: utf8("x"), messageId: "a" });
+    const cancelled = chat.publish({
+      payload: utf8("x"),
+      messageId: "b",
+      signal: controller.signal,
+    });
+    const last = chat.publish({ payload: utf8("x"), messageId: "c" });
+
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ code: "Cancelled" });
+
+    await release(socket);
+    await Promise.all([first, last]);
+
+    expect(sentFrames()).toEqual([
+      "*2\n" + publishCommand("a", "x") + publishCommand("c", "x"),
+    ]);
+  });
+});
+
 describe("subscriptions and flush", () => {
   it("flushes registered interests on connect in registration order", async () => {
     const setup = createTestChannel();
@@ -318,7 +512,10 @@ describe("subscriptions and flush", () => {
     setup.channel.defaultSegment().subscribe();
 
     await establish(setup);
-    expect(sentFrames()).toEqual(["@SUB\n$4\nbeta\n", "@SUB\n$5\nalpha\n"]);
+    expect(sockets.at(-1)!.sentCommands()).toEqual([
+      "@SUB\n$4\nbeta\n",
+      "@SUB\n$5\nalpha\n",
+    ]);
   });
 
   it("reflushes interests after reconnect and skips cancelled ones", async () => {
@@ -359,7 +556,7 @@ describe("subscriptions and flush", () => {
     await vi.advanceTimersByTimeAsync(50);
     await queuedPublish;
 
-    expect(sentFrames().slice(64)).toEqual([
+    expect(sockets.at(-1)!.sentCommands().slice(64)).toEqual([
       "@SUB\n$4\nchat\n",
       "@PUB\n$5\nlobby\n$12\ngenerated-65\n$1\ny\n",
     ]);
@@ -384,13 +581,15 @@ describe("subscriptions and flush", () => {
     socket.open();
     await pending;
 
+    // 4 frames of 16 fill the writer's 64 commands.
     expect(setup.channel.state).toBe("connected");
-    expect(socket.send).toHaveBeenCalledTimes(64);
+    expect(socket.send).toHaveBeenCalledTimes(4);
+    expect(socket.sentCommands()).toHaveLength(64);
 
     socket.bufferedAmount = 0;
     await vi.advanceTimersByTimeAsync(50);
 
-    expect(socket.send).toHaveBeenCalledTimes(65);
+    expect(socket.send).toHaveBeenCalledTimes(5);
     expect(sentFrames().at(-1)).toBe("@SUB\n$10\nsegment-64\n");
   });
 
@@ -928,11 +1127,45 @@ describe("rate-limit recovery", () => {
     await vi.advanceTimersByTimeAsync(1);
     await queued;
 
-    expect(sentFrames()).toEqual([
+    // The resend goes out packed in one frame.
+    expect(socket.send).toHaveBeenCalledTimes(1);
+    expect(sockets.at(-1)!.sentCommands()).toEqual([
       "@SUB\n$4\nchat\n",
       "@PRES_SUB\n$4\nchat\n",
       "@PUB\n$5\nlobby\n$11\ngenerated-1\n$1\na\n",
       "@PUB\n$5\nlobby\n$11\ngenerated-2\n$1\nb\n",
+    ]);
+  });
+
+  it("does not resend a publish the server refused for its size", async () => {
+    const { channel } = await establish();
+    const errors: unknown[] = [];
+    channel.events().onError((error) => errors.push(error));
+    const chat = channel.segment("chat");
+    await chat.publish({ payload: utf8("big"), messageId: "too-big" });
+    await chat.publish({ payload: utf8("ok"), messageId: "fits" });
+    const socket = sockets.at(-1)!;
+    socket.send.mockClear();
+
+    socket.receive(
+      errorFrame(
+        "MessageSizeLimitError",
+        "Message size limit exceeded; payload size = 3 bytes; size limit = 1 KB",
+        "PUB",
+        "$7\ntoo-big\n",
+      ),
+    );
+    socket.receive(rateLimitFrame());
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(sentFrames()).toEqual(["@PUB\n$4\nchat\n$4\nfits\n$2\nok\n"]);
+    expect(errors).toEqual([
+      expect.objectContaining({
+        type: "MessageSizeLimitError",
+        subType: "PUB",
+        resource: "too-big",
+      }),
+      expect.objectContaining({ type: "RateLimitError" }),
     ]);
   });
 
@@ -1050,8 +1283,8 @@ describe("rate-limit recovery", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await published;
 
-    // Publishing joins the segment, so the UNSUB has to follow it.
-    expect(sentFrames()).toEqual([
+    // The commands for one segment keep their call order.
+    expect(sockets.at(-1)!.sentCommands()).toEqual([
       "@PUB\n$4\nchat\n$11\ngenerated-1\n$1\nx\n",
       "@UNSUB\n$4\nchat\n",
     ]);
@@ -1158,7 +1391,7 @@ describe("rate-limit recovery", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     await Promise.all([first, second]);
 
-    expect(sentFrames()).toEqual([
+    expect(sockets.at(-1)!.sentCommands()).toEqual([
       "@PUB\n$4\nchat\n$11\ngenerated-1\n$1\n1\n",
       "@SUB\n$4\nchat\n",
       "@PUB\n$4\nchat\n$11\ngenerated-2\n$1\n2\n",
@@ -1249,7 +1482,10 @@ describe("rate-limit recovery", () => {
     socket.send.mockClear();
     channel.segment("lobby").subscribe();
 
-    expect(sentFrames()).toEqual(["@SUB\n$5\nlobby\n", "@SUB\n$4\nchat\n"]);
+    expect(sockets.at(-1)!.sentCommands()).toEqual([
+      "@SUB\n$5\nlobby\n",
+      "@SUB\n$4\nchat\n",
+    ]);
   });
 
   it("resends at most the last 64 publishes", async () => {
@@ -1276,7 +1512,7 @@ describe("rate-limit recovery", () => {
       );
     }
 
-    expect(sentFrames()).toEqual(expected);
+    expect(sockets.at(-1)!.sentCommands()).toEqual(expected);
   });
 
   it("rejects a presence query while sending is paused", async () => {
@@ -1363,7 +1599,7 @@ describe("publishes across a reconnect", () => {
     await reconnect();
     await Promise.all(published);
 
-    expect(sentFrames()).toEqual([
+    expect(sockets.at(-1)!.sentCommands()).toEqual([
       publishFrame("chat", "generated-1", "a"),
       publishFrame("chat", "generated-2", "b"),
       publishFrame("chat", "generated-3", "c"),
@@ -1386,7 +1622,7 @@ describe("publishes across a reconnect", () => {
     await reconnect();
     await Promise.all([beforeDrop, duringOutage]);
 
-    expect(sentFrames()).toEqual([
+    expect(sockets.at(-1)!.sentCommands()).toEqual([
       "@SUB\n$4\nchat\n",
       "@SUB\n$4\nnews\n",
       "@PRES_SUB\n$5\nlobby\n",

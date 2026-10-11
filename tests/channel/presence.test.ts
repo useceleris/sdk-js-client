@@ -133,7 +133,7 @@ describe("presence interests", () => {
     dropped.cancel();
 
     await establish(setup);
-    expect(sentFrames()).toEqual([
+    expect(sockets.at(-1)!.sentCommands()).toEqual([
       "@SUB\n$4\nbeta\n",
       "@PRES_SUB\n$7\ndefault\n",
       "@PRES_SUB\n$5\nalpha\n",

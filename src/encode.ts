@@ -18,6 +18,31 @@ export function encodeClientCommand(command: ClientCommand): Uint8Array {
   return new CommandEncoder().encode(parsedCommand.data);
 } // end function encodeClientCommand
 
+// One frame for the commands: a single command as it is, several in a `*N`
+// array.
+export function encodeBatch(commands: readonly Uint8Array[]): Uint8Array {
+  if (commands.length === 1) return commands[0]!;
+
+  const header = TEXT_ENCODER.encode(`*${commands.length}\n`);
+  const frame = new Uint8Array(
+    commands.reduce(
+      (total, command) => total + command.byteLength,
+      header.byteLength,
+    ),
+  );
+
+  frame.set(header);
+
+  let offset = header.byteLength;
+
+  for (const command of commands) {
+    frame.set(command, offset);
+    offset += command.byteLength;
+  }
+
+  return frame;
+} // end function encodeBatch
+
 class CommandEncoder {
   private readonly parts: Uint8Array[] = [];
   private byteLength = 0;

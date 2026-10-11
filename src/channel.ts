@@ -24,6 +24,7 @@ import {
   DEFAULT_SEGMENT_ID,
   LENIENT_TEXT_DECODER,
   PRESENCE_LIST_COMMAND,
+  MESSAGE_SIZE_LIMIT_ERROR_TYPE,
   RATE_LIMIT_ERROR_TYPE,
   RETRY_BUDGET_RESET_MS,
 } from "./constants";
@@ -707,14 +708,20 @@ export class Channel {
       );
     }
 
+    const messageId = options.messageId ?? this.internals.generateMessageId();
     const bytes = encodeClientCommand({
       command: "PUB",
       segmentId,
-      messageId: options.messageId ?? this.internals.generateMessageId(),
+      messageId,
       payload: options.payload,
     });
 
-    return this.commandQueue.publish(segmentId, bytes, options.signal);
+    return this.commandQueue.publish(
+      segmentId,
+      messageId,
+      bytes,
+      options.signal,
+    );
   } // end method publishToSegment
 
   // Restoration goes through the queue, so it waits for writer room and
@@ -772,6 +779,16 @@ export class Channel {
 
         if (message.type === RATE_LIMIT_ERROR_TYPE) {
           this.commandQueue.receiveRateLimit();
+        }
+
+        // A publish refused for its size names itself by message id; the
+        // other commands in its frame ran (BATCH-01).
+        if (
+          message.type === MESSAGE_SIZE_LIMIT_ERROR_TYPE &&
+          message.subType === "PUB" &&
+          typeof message.resource === "string"
+        ) {
+          this.commandQueue.forgetPublish(message.resource);
         }
 
         this.emitError(error);

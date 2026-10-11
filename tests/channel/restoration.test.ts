@@ -59,7 +59,7 @@ describe("recovery restoration", () => {
     expect(setup.channel.state).toBe("connected");
     // Interests only, messages before presence, registration order,
     // cancelled intent excluded, no publish resend.
-    expect(framesOn(reconnectSocket)).toEqual([
+    expect(reconnectSocket.sentCommands()).toEqual([
       "@SUB\n$4\nbeta\n",
       "@SUB\n$5\nalpha\n",
       "@PRES_SUB\n$7\ndefault\n",
@@ -156,13 +156,16 @@ describe("recovery restoration", () => {
     reconnectSocket.open();
     await flushMicrotasks();
 
+    // 4 frames of 16 fill the writer's 64 commands.
     expect(setup.channel.state).toBe("connected");
-    expect(reconnectSocket.send).toHaveBeenCalledTimes(64);
+    expect(reconnectSocket.send).toHaveBeenCalledTimes(4);
+    expect(reconnectSocket.sentCommands()).toHaveLength(64);
 
     reconnectSocket.bufferedAmount = 0;
     await vi.advanceTimersByTimeAsync(50);
 
-    expect(reconnectSocket.send).toHaveBeenCalledTimes(65);
+    expect(reconnectSocket.send).toHaveBeenCalledTimes(5);
+    expect(reconnectSocket.sentCommands()).toHaveLength(65);
     expect(errors).toEqual([]);
   });
 
@@ -177,8 +180,8 @@ describe("recovery restoration", () => {
     const secondRecoverySocket = sockets.at(-1)!;
 
     const expected = ["@SUB\n$4\nchat\n", "@PRES_SUB\n$4\nchat\n"];
-    expect(framesOn(firstRecoverySocket)).toEqual(expected);
-    expect(framesOn(secondRecoverySocket)).toEqual(expected);
+    expect(firstRecoverySocket.sentCommands()).toEqual(expected);
+    expect(secondRecoverySocket.sentCommands()).toEqual(expected);
     expect(setup.channel.state).toBe("connected");
     expect(vi.getTimerCount()).toBe(0);
   });
