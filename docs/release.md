@@ -21,11 +21,11 @@ workflow's `contents: write` permission.
 
 Follow semantic versioning:
 
-| Change | Bump | Example |
-| ------ | ---- | ------- |
+| Change                                                                | Bump  | Example           |
+| --------------------------------------------------------------------- | ----- | ----------------- |
 | Backward-compatible bug fix, documentation fix or internal correction | Patch | `1.1.1` → `1.1.2` |
-| New backward-compatible public capability | Minor | `1.1.1` → `1.2.0` |
-| Removed, renamed or incompatible public behavior | Major | `1.1.1` → `2.0.0` |
+| New backward-compatible public capability                             | Minor | `1.1.1` → `1.2.0` |
+| Removed, renamed or incompatible public behavior                      | Major | `1.1.1` → `2.0.0` |
 
 Never reuse a version. npm packages and git tags are immutable release records.
 
