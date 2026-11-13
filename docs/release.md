@@ -2,14 +2,18 @@
 
 This package uses **manual semantic versioning**. A release version is chosen,
 reviewed and committed before it reaches the protected `release` branch. The
-release workflow then validates that exact commit, publishes the package to npm
-and creates the matching GitHub tag and release.
+release workflow is then started manually from that branch to validate the
+exact commit, publish the package to npm and create the matching GitHub tag and
+release.
 
 ## Required setup
 
 The `release` branch is protected and accepts changes through reviewed pull
 requests. It must contain [the release workflow](../.github/workflows/release.yml).
-Merging a commit into this branch is the only event that starts a publish.
+Merging into this branch never publishes automatically. A maintainer explicitly
+starts the workflow from `release` in the GitHub Actions interface. The workflow
+file must also be present on the default branch for GitHub to offer the **Run
+workflow** button.
 
 The repository Actions secrets must contain `NPM_TOKEN`: an npm granular token
 that has publish access to `@useceleris/client`. The workflow uses GitHub's
@@ -61,11 +65,13 @@ src/constants.ts             1.1.2
 Open a pull request into `release`. The normal CI workflow validates the build,
 typechecks, linting, formatting and tests. Review the selected semantic-version
 bump and the version changes along with the product change. Merge only after CI
-passes.
+passes. Then open **Actions**, select **Release**, choose the `release` branch
+and select **Run workflow**. The workflow rejects dispatches from any other
+branch.
 
 ## What the release workflow does
 
-The merge to `release` starts the release workflow. It:
+The manual workflow dispatch from `release` starts the release workflow. It:
 
 1. Installs the committed dependency lockfile with `npm ci`.
 2. Installs Bun, Deno and the Playwright browser engines required by the test
