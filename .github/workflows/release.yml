@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    branches: [release]
+
+permissions:
+  contents: write
+
+# Only one publish may claim a package version at a time.
+concurrency:
+  group: client-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: latest
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium firefox webkit
+
+      # Build, typecheck, lint, format-check, and run the complete local suite.
+      - run: npm run check
+
+      - name: Verify the version has not been released
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
+            echo "Version $version already has a Git tag."
+            exit 1
+          fi
+
+      - name: Publish package
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub release
+        run: |
+          version=$(node -p "require('./package.json').version")
+          gh release create "v$version" --target "$GITHUB_SHA" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
