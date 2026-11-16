@@ -4,7 +4,8 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+  id-token: write
 
 # Only one publish may claim a package version at a time.
 concurrency:
@@ -15,7 +16,7 @@ jobs:
   release:
     # A maintainer starts this workflow manually, from the release branch only.
     if: github.ref == 'refs/heads/release'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
@@ -42,22 +43,7 @@ jobs:
       # Build, typecheck, lint, format-check, and run the complete local suite.
       - run: npm run check
 
-      - name: Verify the version has not been released
-        run: |
-          version=$(node -p "require('./package.json').version")
-          if git rev-parse -q --verify "refs/tags/v$version" > /dev/null; then
-            echo "Version $version already has a Git tag."
-            exit 1
-          fi
-
-      - name: Publish package
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Create GitHub release
-        run: |
-          version=$(node -p "require('./package.json').version")
-          gh release create "v$version" --target "$GITHUB_SHA" --generate-notes
-        env:
-          GH_TOKEN: ${{ github.token }}
+      # npm exchanges the GitHub OIDC identity for a short-lived credential.
+      # This uploads a reviewable stage; it does not publish a live npm version.
+      - name: Stage package
+        run: npm stage publish --access public
